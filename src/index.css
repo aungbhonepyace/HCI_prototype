@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color: #10231e;
+  background:
+    radial-gradient(circle at top left, rgba(247, 178, 103, 0.24), transparent 34%),
+    radial-gradient(circle at right bottom, rgba(15, 118, 110, 0.22), transparent 44%),
+    linear-gradient(180deg, #f9f4ec 0%, #e9f3ef 100%);
+  font-family: "Avenir Next", "Gill Sans", "Trebuchet MS", sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color-scheme: light;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  overflow-wrap: anywhere;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+::selection {
+  background: rgba(239, 108, 77, 0.18);
+}
+
+@layer components {
+  .panel {
+    @apply min-w-0 rounded-[28px] border border-white/70 bg-white/85 shadow-panel backdrop-blur;
+  }
+
+  .panel-muted {
+    @apply min-w-0 rounded-[24px] border border-ink/5 bg-white/65 backdrop-blur;
+  }
+
+  .section-title {
+    @apply font-heading text-2xl font-semibold tracking-tight text-ink;
+  }
+
+  .subtle-label {
+    @apply text-xs font-semibold uppercase tracking-[0.24em] text-ink/50;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center rounded-full bg-ink px-5 py-3 text-center text-sm font-semibold text-white transition hover:-translate-y-0.5 hover:bg-tide disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center rounded-full border border-ink/10 bg-white px-5 py-3 text-center text-sm font-semibold text-ink transition hover:-translate-y-0.5 hover:border-tide hover:text-tide;
+  }
+
+  .input {
+    @apply w-full rounded-2xl border border-ink/10 bg-white px-4 py-3 text-sm text-ink outline-none transition placeholder:text-ink/35 focus:border-tide focus:ring-2 focus:ring-tide/20;
+  }
+
+  .textarea {
+    @apply input min-h-28 resize-y;
+  }
+}

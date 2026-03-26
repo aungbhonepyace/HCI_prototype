@@ -193,6 +193,7 @@ export function AdminClassProjectsPage() {
   const classRecord = state.classes.find((entry) => entry.id === id);
   const classProjects = state.projects.filter((project) => project.classId === id);
   const [form, setForm] = useState(defaultProjectPayload());
+  const [customRole, setCustomRole] = useState("");
 
   if (!classRecord) {
     return <EmptyState title="Class not found" body="Select a class from the classes page first." />;
@@ -268,6 +269,55 @@ export function AdminClassProjectsPage() {
                 </OptionChip>
               ))}
             </div>
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+              <input
+                className="input flex-1"
+                value={customRole}
+                onChange={(event) => setCustomRole(event.target.value)}
+                placeholder="Add custom role, for example QA Lead"
+              />
+              <button
+                type="button"
+                className="btn-secondary sm:self-end"
+                onClick={() => {
+                  const nextRole = customRole.trim();
+                  if (!nextRole) {
+                    return;
+                  }
+
+                  setForm((previous) => ({
+                    ...previous,
+                    roleTemplates: previous.roleTemplates.some(
+                      (role) => role.toLowerCase() === nextRole.toLowerCase(),
+                    )
+                      ? previous.roleTemplates
+                      : [...previous.roleTemplates, nextRole],
+                  }));
+                  setCustomRole("");
+                }}
+              >
+                Add custom
+              </button>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-3">
+              {form.roleTemplates
+                .filter((role) => !ROLE_OPTIONS.includes(role as (typeof ROLE_OPTIONS)[number]))
+                .map((role) => (
+                  <button
+                    key={role}
+                    type="button"
+                    className="transition hover:-translate-y-0.5"
+                    onClick={() =>
+                      setForm((previous) => ({
+                        ...previous,
+                        roleTemplates: previous.roleTemplates.filter((item) => item !== role),
+                      }))
+                    }
+                  >
+                    <RolePill role={role} />
+                  </button>
+                ))}
+            </div>
           </Field>
           <button
             className="btn-primary mt-6 w-full"
@@ -277,8 +327,10 @@ export function AdminClassProjectsPage() {
               }
               createProject(classRecord.id, {
                 ...form,
-                roleTemplates: form.roleTemplates as ProjectRole[],
+                roleTemplates: form.roleTemplates,
               });
+              setForm(defaultProjectPayload());
+              setCustomRole("");
             }}
           >
             Create project

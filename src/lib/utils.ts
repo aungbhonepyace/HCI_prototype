@@ -1,12 +1,13 @@
 import type {
   AvailabilitySlot,
   GoalLevel,
+  PresetProjectRole,
   ProjectRole,
   UserProfile,
   WorkingStyle,
 } from "@/lib/types";
 
-export const ROLE_OPTIONS: ProjectRole[] = [
+export const ROLE_OPTIONS: PresetProjectRole[] = [
   "Backend/SQL",
   "UI/Design",
   "Analyst",

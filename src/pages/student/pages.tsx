@@ -218,7 +218,7 @@ export function StudentDashboardPage() {
 export function StudentJoinPage() {
   const { joinProject, state } = useApp();
   const navigate = useNavigate();
-  const [code, setCode] = useState(state.projects[0]?.joinCode || "");
+  const [code, setCode] = useState("");
   const [message, setMessage] = useState<string | null>(null);
 
   return (
@@ -231,12 +231,12 @@ export function StudentJoinPage() {
 
       <div className="grid gap-4 xl:grid-cols-[0.8fr,1.2fr]">
         <section className="panel p-6 md:p-8">
-          <Field label="Project join code" hint="Example: GF-MOBIL-7X3A">
+          <Field label="Project join code">
             <input
               className="input"
               value={code}
               onChange={(event) => setCode(event.target.value)}
-              placeholder="Enter join code"
+              placeholder="GF-MOBIL-7X3A"
             />
           </Field>
           <button

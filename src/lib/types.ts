@@ -18,11 +18,13 @@ export type ReportSeverity = "low" | "medium" | "high";
 
 export type ReportStatus = "New" | "Investigating" | "Resolved" | "Closed";
 
-export type ProjectRole =
+export type PresetProjectRole =
   | "Backend/SQL"
   | "UI/Design"
   | "Analyst"
   | "Writer/Presenter";
+
+export type ProjectRole = string;
 
 export type TeamStatus = "forming" | "active" | "paused";
 

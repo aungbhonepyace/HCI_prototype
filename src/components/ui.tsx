@@ -3,6 +3,22 @@ import type { ReactNode } from "react";
 import type { ProjectRole, User } from "@/lib/types";
 import { cn, initials } from "@/lib/utils";
 
+const CUSTOM_ROLE_TONES = [
+  "bg-sky-100 text-sky-800",
+  "bg-emerald-100 text-emerald-800",
+  "bg-rose-100 text-rose-800",
+  "bg-violet-100 text-violet-800",
+  "bg-amber-100 text-amber-900",
+  "bg-cyan-100 text-cyan-800",
+  "bg-lime-100 text-lime-800",
+  "bg-fuchsia-100 text-fuchsia-800",
+];
+
+function getCustomRoleTone(role: string): string {
+  const hash = role.split("").reduce((total, char) => total + char.charCodeAt(0), 0);
+  return CUSTOM_ROLE_TONES[hash % CUSTOM_ROLE_TONES.length];
+}
+
 export function LogoMark() {
   return (
     <Link to="/" className="inline-flex min-w-0 items-center gap-3">
@@ -174,7 +190,9 @@ export function RolePill({ role }: { role: ProjectRole }) {
         ? "bg-coral/15 text-coral"
         : role === "Analyst"
           ? "bg-tide/15 text-tide"
-          : "bg-gold/35 text-ink";
+          : role === "Writer/Presenter"
+            ? "bg-gold/35 text-ink"
+            : getCustomRoleTone(role);
   return <span className={cn("max-w-full break-words rounded-full px-3 py-1 text-xs font-semibold", tone)}>{role}</span>;
 }
 

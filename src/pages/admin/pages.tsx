@@ -2,40 +2,40 @@ import { useDeferredValue, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Badge, EmptyState, Field, OptionChip, PageIntro, RolePill, StatCard, VerifiedBadge } from "@/components/ui";
 import { useApp } from "@/lib/app-context";
+import { resolveMatchingProfile } from "@/lib/matching";
 import { defaultProjectPayload } from "@/lib/storage";
 import type {
-  AvailabilitySlot,
-  GoalLevel,
-  ProjectRole,
+  ContactMethod,
+  MeetingPreference,
   ReportCategory,
   ReportSeverity,
   ReportStatus,
+  ResponseTime,
   User,
-  WorkingStyle,
 } from "@/lib/types";
 import {
-  AVAILABILITY_OPTIONS,
-  GOAL_OPTIONS,
+  CONTACT_METHOD_OPTIONS,
+  MEETING_PREFERENCE_OPTIONS,
+  RESPONSE_TIME_OPTIONS,
   ROLE_OPTIONS,
-  STYLE_OPTIONS,
   cn,
   formatDate,
   formatDeadline,
   sentenceCase,
-  toggleInArray,
 } from "@/lib/utils";
 
 interface StudentFormState {
   name: string;
   email: string;
   verified: boolean;
-  rolePreference: ProjectRole;
-  secondaryRole: ProjectRole | "";
-  skills: string;
-  availability: AvailabilitySlot[];
-  goalLevel: GoalLevel;
-  workingStyle: WorkingStyle;
   bio: string;
+  major: string;
+  year: string;
+  preferredContactMethod: ContactMethod;
+  responseTime: ResponseTime;
+  meetingPreference: MeetingPreference;
+  timeZone: string;
+  notes: string;
 }
 
 function buildStudentForm(student?: User): StudentFormState {
@@ -43,14 +43,19 @@ function buildStudentForm(student?: User): StudentFormState {
     name: student?.name || "",
     email: student?.email || "",
     verified: student?.verified ?? true,
-    rolePreference: student?.profile.rolePreference || "UI/Design",
-    secondaryRole: student?.profile.secondaryRole || "",
-    skills: student?.profile.skills.join(", ") || "",
-    availability: student?.profile.availability || ["weekdays", "evenings"],
-    goalLevel: student?.profile.goalLevel || "balanced",
-    workingStyle: student?.profile.workingStyle || "collab",
     bio: student?.profile.bio || "",
+    major: student?.profile.major || "",
+    year: student?.profile.year || "",
+    preferredContactMethod: student?.profile.preferredContactMethod || "Email",
+    responseTime: student?.profile.responseTime || "same day",
+    meetingPreference: student?.profile.meetingPreference || "Mixed",
+    timeZone: student?.profile.timeZone || "Asia/Bangkok",
+    notes: student?.profile.notes || "",
   };
+}
+
+function getMatchingSnapshot(state: ReturnType<typeof useApp>["state"], userId: string) {
+  return resolveMatchingProfile(state, userId);
 }
 
 export function AdminDashboardPage() {
@@ -132,6 +137,73 @@ export function AdminDashboardPage() {
           </div>
         </section>
       </div>
+    </div>
+  );
+}
+
+export function AdminNotificationsPage() {
+  const { currentUser, markAllNotificationsRead, markNotificationRead, state } = useApp();
+
+  if (!currentUser) {
+    return null;
+  }
+
+  const notifications = state.notifications.filter((item) => item.userId === currentUser.id);
+
+  return (
+    <div className="space-y-4 md:space-y-6">
+      <PageIntro
+        eyebrow="Notifications"
+        title="Review roster activity, project updates, and moderation events."
+        description="Admin notifications persist in localStorage and collect the events that need instructor or TA attention."
+        actions={
+          <button className="btn-secondary" onClick={() => markAllNotificationsRead()}>
+            Mark all read
+          </button>
+        }
+      />
+
+      <section className="space-y-4">
+        {notifications.length ? (
+          notifications.map((notification) => (
+            <article
+              key={notification.id}
+              className={cn(
+                "panel p-6",
+                notification.read ? "opacity-80" : "ring-2 ring-gold/30",
+              )}
+            >
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-3">
+                    {!notification.read ? <Badge tone="warn">New</Badge> : <Badge tone="soft">Read</Badge>}
+                    <p className="font-semibold text-ink">{notification.title}</p>
+                  </div>
+                  <p className="mt-3 text-sm text-ink/65">{notification.body}</p>
+                  <p className="mt-3 text-xs text-ink/45">{formatDate(notification.createdAt)}</p>
+                </div>
+                <div className="flex flex-wrap gap-3 md:justify-end">
+                  {notification.link ? (
+                    <Link to={notification.link} className="btn-secondary">
+                      Open
+                    </Link>
+                  ) : null}
+                  {!notification.read ? (
+                    <button className="btn-primary" onClick={() => markNotificationRead(notification.id)}>
+                      Mark read
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </article>
+          ))
+        ) : (
+          <EmptyState
+            title="No notifications yet"
+            body="Class creation, student joins, seeded project updates, and moderation events will appear here."
+          />
+        )}
+      </section>
     </div>
   );
 }
@@ -405,6 +477,9 @@ export function AdminReportsPage() {
 
   const selected = filtered.find((report) => report.id === selectedId) || filtered[0];
   const selectedTargetUser = state.users.find((user) => user.id === selected?.context?.userId || user.id === selected?.targetId);
+  const selectedTargetMatching = selectedTargetUser
+    ? getMatchingSnapshot(state, selectedTargetUser.id)
+    : undefined;
 
   return (
     <div className="space-y-4 md:space-y-6">
@@ -533,7 +608,7 @@ export function AdminReportsPage() {
                     <p className="mt-3 font-semibold text-ink">{selectedTargetUser.name}</p>
                     <div className="mt-2 flex flex-wrap gap-2">
                       <VerifiedBadge />
-                      <RolePill role={selectedTargetUser.profile.rolePreference} />
+                      <RolePill role={selectedTargetMatching?.rolePreference || "UI/Design"} />
                     </div>
                     <p className="mt-3 text-sm text-ink/65">
                       Flags:{" "}
@@ -628,6 +703,7 @@ export function AdminStudentsPage() {
 
   const students = allStudents
     .filter((user) => {
+      const matching = getMatchingSnapshot(state, user.id);
       const memberships = state.memberships.filter(
         (membership) => membership.userId === user.id && membership.status === "active",
       );
@@ -642,7 +718,7 @@ export function AdminStudentsPage() {
       }
       if (
         deferredSearch &&
-        !`${user.name} ${user.email} ${user.profile.skills.join(" ")}`
+        !`${user.name} ${user.email} ${user.profile.major} ${user.profile.year} ${matching.skills.join(" ")} ${matching.rolePreference}`
           .toLowerCase()
           .includes(deferredSearch.toLowerCase())
       ) {
@@ -656,7 +732,7 @@ export function AdminStudentsPage() {
       <PageIntro
         eyebrow="Students"
         title="Review and manage the student roster."
-        description="Create students, edit profile data, add them to a class project, remove them from a class, and inspect team or moderation state in one place."
+        description="Create students, edit profile details, add them to a class, remove them from a class, and inspect team or moderation state in one place."
       />
 
       <div className="grid gap-4 xl:grid-cols-[1.05fr,0.95fr]">
@@ -731,104 +807,87 @@ export function AdminStudentsPage() {
                 }
               />
             </Field>
-            <Field label="Primary role">
+            <Field label="Preferred contact method">
               <select
                 className="input"
-                value={studentForm.rolePreference}
+                value={studentForm.preferredContactMethod}
                 onChange={(event) =>
                   setStudentForm((previous) => ({
                     ...previous,
-                    rolePreference: event.target.value as ProjectRole,
+                    preferredContactMethod: event.target.value as ContactMethod,
                   }))
                 }
               >
-                {ROLE_OPTIONS.map((role) => (
-                  <option key={role} value={role}>
-                    {role}
+                {CONTACT_METHOD_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
                   </option>
                 ))}
               </select>
             </Field>
-            <Field label="Secondary role">
+            <Field label="Typical response time">
               <select
                 className="input"
-                value={studentForm.secondaryRole}
+                value={studentForm.responseTime}
                 onChange={(event) =>
                   setStudentForm((previous) => ({
                     ...previous,
-                    secondaryRole: event.target.value as ProjectRole | "",
+                    responseTime: event.target.value as ResponseTime,
                   }))
                 }
               >
-                <option value="">Optional</option>
-                {ROLE_OPTIONS.map((role) => (
-                  <option key={role} value={role}>
-                    {role}
+                {RESPONSE_TIME_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
                   </option>
                 ))}
               </select>
             </Field>
-            <div className="md:col-span-2">
-              <Field label="Skills">
-                <input
-                  className="input"
-                  value={studentForm.skills}
-                  onChange={(event) =>
-                    setStudentForm((previous) => ({ ...previous, skills: event.target.value }))
-                  }
-                  placeholder="React, SQL, Figma"
-                />
-              </Field>
-            </div>
-            <div className="md:col-span-2">
-              <Field label="Availability">
-                <div className="flex flex-wrap gap-3">
-                  {AVAILABILITY_OPTIONS.map((slot) => (
-                    <OptionChip
-                      key={slot}
-                      selected={studentForm.availability.includes(slot)}
-                      onClick={() =>
-                        setStudentForm((previous) => ({
-                          ...previous,
-                          availability: toggleInArray(previous.availability, slot),
-                        }))
-                      }
-                    >
-                      {sentenceCase(slot)}
-                    </OptionChip>
-                  ))}
-                </div>
-              </Field>
-            </div>
-            <Field label="Goal level">
-              <div className="flex flex-wrap gap-3">
-                {GOAL_OPTIONS.map((goal) => (
-                  <OptionChip
-                    key={goal}
-                    selected={studentForm.goalLevel === goal}
-                    onClick={() =>
-                      setStudentForm((previous) => ({ ...previous, goalLevel: goal }))
-                    }
-                  >
-                    {sentenceCase(goal)}
-                  </OptionChip>
+            <Field label="Meeting preference">
+              <select
+                className="input"
+                value={studentForm.meetingPreference}
+                onChange={(event) =>
+                  setStudentForm((previous) => ({
+                    ...previous,
+                    meetingPreference: event.target.value as MeetingPreference,
+                  }))
+                }
+              >
+                {MEETING_PREFERENCE_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
                 ))}
-              </div>
+              </select>
             </Field>
-            <Field label="Working style">
-              <div className="flex flex-wrap gap-3">
-                {STYLE_OPTIONS.map((style) => (
-                  <OptionChip
-                    key={style}
-                    selected={studentForm.workingStyle === style}
-                    onClick={() =>
-                      setStudentForm((previous) => ({ ...previous, workingStyle: style }))
-                    }
-                  >
-                    {sentenceCase(style)}
-                  </OptionChip>
-                ))}
-              </div>
+            <Field label="Time zone">
+              <input
+                className="input"
+                value={studentForm.timeZone}
+                onChange={(event) =>
+                  setStudentForm((previous) => ({ ...previous, timeZone: event.target.value }))
+                }
+                placeholder="Asia/Bangkok"
+              />
+            </Field>
+            <Field label="Major (optional)">
+              <input
+                className="input"
+                value={studentForm.major}
+                onChange={(event) =>
+                  setStudentForm((previous) => ({ ...previous, major: event.target.value }))
+                }
+              />
+            </Field>
+            <Field label="Year (optional)">
+              <input
+                className="input"
+                value={studentForm.year}
+                onChange={(event) =>
+                  setStudentForm((previous) => ({ ...previous, year: event.target.value }))
+                }
+              />
             </Field>
             <div className="md:col-span-2">
               <Field label="Bio">
@@ -837,6 +896,17 @@ export function AdminStudentsPage() {
                   value={studentForm.bio}
                   onChange={(event) =>
                     setStudentForm((previous) => ({ ...previous, bio: event.target.value }))
+                  }
+                />
+              </Field>
+            </div>
+            <div className="md:col-span-2">
+              <Field label="Notes / boundaries">
+                <textarea
+                  className="textarea"
+                  value={studentForm.notes}
+                  onChange={(event) =>
+                    setStudentForm((previous) => ({ ...previous, notes: event.target.value }))
                   }
                 />
               </Field>
@@ -853,15 +923,13 @@ export function AdminStudentsPage() {
                   verified: studentForm.verified,
                   profile: {
                     bio: studentForm.bio,
-                    skills: studentForm.skills
-                      .split(",")
-                      .map((item) => item.trim())
-                      .filter(Boolean),
-                    availability: studentForm.availability,
-                    goalLevel: studentForm.goalLevel,
-                    workingStyle: studentForm.workingStyle,
-                    rolePreference: studentForm.rolePreference,
-                    secondaryRole: studentForm.secondaryRole || undefined,
+                    major: studentForm.major,
+                    year: studentForm.year,
+                    preferredContactMethod: studentForm.preferredContactMethod,
+                    responseTime: studentForm.responseTime,
+                    meetingPreference: studentForm.meetingPreference,
+                    timeZone: studentForm.timeZone,
+                    notes: studentForm.notes,
                   },
                 };
 
@@ -1032,6 +1100,7 @@ export function AdminStudentsPage() {
 
         <div className="mt-6 grid gap-4 xl:grid-cols-2">
           {students.map((student) => {
+            const matching = getMatchingSnapshot(state, student.id);
             const memberships = state.memberships.filter(
               (membership) => membership.userId === student.id,
             );
@@ -1052,8 +1121,8 @@ export function AdminStudentsPage() {
                     </div>
                     <p className="mt-2 text-sm text-ink/65">{student.email}</p>
                     <div className="mt-3 flex flex-wrap gap-2">
-                      <RolePill role={student.profile.rolePreference} />
-                      {student.profile.secondaryRole ? <RolePill role={student.profile.secondaryRole} /> : null}
+                      <RolePill role={matching.rolePreference} />
+                      {matching.secondaryRole ? <RolePill role={matching.secondaryRole} /> : null}
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-2 md:justify-end">
@@ -1063,8 +1132,17 @@ export function AdminStudentsPage() {
                 </div>
                 <p className="mt-4 text-sm text-ink/70">{student.profile.bio}</p>
                 <p className="mt-4 text-sm text-ink/65">
-                  Skills: {student.profile.skills.join(", ")} • Availability{" "}
-                  {student.profile.availability.map(sentenceCase).join(", ")}
+                  {student.profile.major || "Major optional"}
+                  {student.profile.year ? ` • ${student.profile.year}` : ""}
+                  {" • "}
+                  {student.profile.preferredContactMethod} • {student.profile.responseTime}
+                </p>
+                <p className="mt-2 text-sm text-ink/65">
+                  Matching: {matching.skills.join(", ") || "No skills yet"} •{" "}
+                  {matching.availability.map(sentenceCase).join(", ") || "Flexible"}
+                </p>
+                <p className="mt-2 text-sm text-ink/65">
+                  {sentenceCase(matching.goalLevel)} • {sentenceCase(matching.workingStyle)} • {student.profile.timeZone}
                 </p>
                 <p className="mt-3 text-sm text-ink/65">
                   Flags:{" "}

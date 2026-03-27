@@ -2,6 +2,7 @@ import type {
   AiAnswers,
   AppState,
   MatchSuggestion,
+  MatchingProfile,
   Membership,
   ProjectRecord,
   ProjectRole,
@@ -9,7 +10,27 @@ import type {
   TeamRecord,
   User,
 } from "@/lib/types";
-import { createId, inferRole, overlapCount, sentenceCase, unique } from "@/lib/utils";
+import { createId, overlapCount, sentenceCase, unique } from "@/lib/utils";
+
+function fallbackMatchingProfile(userId: string): MatchingProfile {
+  return {
+    userId,
+    rolePreference: "UI/Design",
+    secondaryRole: "Writer/Presenter",
+    skills: ["Figma", "Writing"],
+    availability: ["weekdays", "evenings"],
+    goalLevel: "balanced",
+    workingStyle: "collab",
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function resolveMatchingProfile(state: AppState, userId: string): MatchingProfile {
+  return (
+    state.matchingProfiles.find((profile) => profile.userId === userId) ||
+    fallbackMatchingProfile(userId)
+  );
+}
 
 function getActiveMembership(
   memberships: Membership[],
@@ -24,7 +45,11 @@ function getActiveMembership(
   );
 }
 
-function getAvailableStudents(state: AppState, projectId: string, currentUserId: string): User[] {
+function getProjectAvailableStudents(
+  state: AppState,
+  projectId: string,
+  currentUserId: string,
+): Array<{ user: User; matching: MatchingProfile }> {
   const memberIds = state.memberships
     .filter(
       (membership) =>
@@ -35,12 +60,57 @@ function getAvailableStudents(state: AppState, projectId: string, currentUserId:
     )
     .map((membership) => membership.userId);
 
-  return state.users.filter(
-    (user) =>
-      user.role === "student" &&
-      memberIds.includes(user.id) &&
-      !user.flags.matchingRestricted,
+  return state.users
+    .filter(
+      (user) =>
+        user.role === "student" &&
+        memberIds.includes(user.id) &&
+        !user.flags.matchingRestricted,
+    )
+    .map((user) => ({
+      user,
+      matching: resolveMatchingProfile(state, user.id),
+    }));
+}
+
+function getFallbackStudents(
+  state: AppState,
+  projectId: string,
+  currentUserId: string,
+): Array<{ user: User; matching: MatchingProfile }> {
+  return state.users
+    .filter(
+      (user) =>
+        user.role === "student" &&
+        user.id !== currentUserId &&
+        !user.flags.matchingRestricted &&
+        !state.memberships.some(
+          (membership) =>
+            membership.userId === user.id &&
+            membership.projectId === projectId &&
+            (membership.status === "removed" ||
+              (membership.status === "active" && Boolean(membership.teamId)) ||
+              membership.status === "active"),
+        ),
+    )
+    .map((user) => ({
+      user,
+      matching: resolveMatchingProfile(state, user.id),
+    }));
+}
+
+function getAvailableStudents(
+  state: AppState,
+  projectId: string,
+  currentUserId: string,
+): Array<{ user: User; matching: MatchingProfile }> {
+  const localCandidates = getProjectAvailableStudents(state, projectId, currentUserId);
+  const localIds = new Set(localCandidates.map((candidate) => candidate.user.id));
+  const fallbackCandidates = getFallbackStudents(state, projectId, currentUserId).filter(
+    (candidate) => !localIds.has(candidate.user.id),
   );
+
+  return [...localCandidates, ...fallbackCandidates];
 }
 
 function rotate<T>(items: T[], offset: number): T[] {
@@ -53,31 +123,32 @@ function rotate<T>(items: T[], offset: number): T[] {
 }
 
 function scoreCandidate(
-  source: Pick<User, "profile">,
-  candidate: User,
+  source: MatchingProfile,
+  candidate: MatchingProfile,
   roleHint?: ProjectRole,
 ): number {
-  const overlapSkills = overlapCount(source.profile.skills, candidate.profile.skills);
-  const overlapAvailability = overlapCount(
-    source.profile.availability,
-    candidate.profile.availability,
-  );
-  const goalMatch = source.profile.goalLevel === candidate.profile.goalLevel ? 3 : 0;
-  const styleMatch = source.profile.workingStyle === candidate.profile.workingStyle ? 2 : 0;
-  const roleBonus = roleHint && inferRole(candidate.profile) === roleHint ? 4 : 0;
+  const overlapSkills = overlapCount(source.skills, candidate.skills);
+  const overlapAvailability = overlapCount(source.availability, candidate.availability);
+  const goalMatch = source.goalLevel === candidate.goalLevel ? 3 : 0;
+  const styleMatch = source.workingStyle === candidate.workingStyle ? 2 : 0;
+  const roleBonus = roleHint && candidate.rolePreference === roleHint ? 4 : 0;
 
   return overlapSkills * 3 + overlapAvailability * 4 + goalMatch + styleMatch + roleBonus;
 }
 
-function buildReasons(source: Pick<User, "profile">, teammates: User[], roles: ProjectRole[]): string[] {
-  const allSkills = unique(teammates.flatMap((candidate) => candidate.profile.skills));
+function buildReasons(
+  source: MatchingProfile,
+  teammates: Array<{ user: User; matching: MatchingProfile }>,
+  roles: ProjectRole[],
+): string[] {
+  const allSkills = unique(teammates.flatMap((candidate) => candidate.matching.skills));
   const sharedAvailability = unique(
     teammates.flatMap((candidate) =>
-      candidate.profile.availability.filter((slot) => source.profile.availability.includes(slot)),
+      candidate.matching.availability.filter((slot) => source.availability.includes(slot)),
     ),
   );
   const alignedGoal = teammates.some(
-    (candidate) => candidate.profile.goalLevel === source.profile.goalLevel,
+    (candidate) => candidate.matching.goalLevel === source.goalLevel,
   );
 
   return [
@@ -86,7 +157,7 @@ function buildReasons(source: Pick<User, "profile">, teammates: User[], roles: P
       ? `Shared availability lines up on ${sharedAvailability.map(sentenceCase).join(", ")}.`
       : "The roster balances different schedules to widen meeting options.",
     alignedGoal
-      ? `At least one teammate shares your ${sentenceCase(source.profile.goalLevel)} outcome target.`
+      ? `At least one teammate shares your ${sentenceCase(source.goalLevel)} outcome target.`
       : "Goal levels are mixed, which can steady pace and accountability.",
     `Roles are covered across ${roles.join(", ")}.`,
   ];
@@ -94,8 +165,9 @@ function buildReasons(source: Pick<User, "profile">, teammates: User[], roles: P
 
 function assignRoles(
   project: ProjectRecord,
-  currentUser: User,
-  teammates: User[],
+  currentUserId: string,
+  currentMatching: MatchingProfile,
+  teammates: Array<{ user: User; matching: MatchingProfile }>,
   preferredRole?: ProjectRole,
 ): Record<string, ProjectRole> {
   const availableRoles = [...project.roleTemplates];
@@ -104,23 +176,23 @@ function assignRoles(
   const currentRole =
     preferredRole && availableRoles.includes(preferredRole)
       ? preferredRole
-      : availableRoles[0] || inferRole(currentUser.profile);
-  assignments[currentUser.id] = currentRole;
+      : availableRoles[0] || currentMatching.rolePreference;
+  assignments[currentUserId] = currentRole;
   const currentIndex = availableRoles.indexOf(currentRole);
   if (currentIndex >= 0) {
     availableRoles.splice(currentIndex, 1);
   }
 
-  teammates.forEach((candidate) => {
-    const preferred = candidate.profile.rolePreference || inferRole(candidate.profile);
-    const fallback = candidate.profile.secondaryRole;
+  teammates.forEach(({ user, matching }) => {
+    const preferred = matching.rolePreference;
+    const fallback = matching.secondaryRole;
     const role =
       (preferred && availableRoles.includes(preferred) && preferred) ||
       (fallback && availableRoles.includes(fallback) && fallback) ||
       availableRoles[0] ||
       preferred ||
       "Analyst";
-    assignments[candidate.id] = role;
+    assignments[user.id] = role;
     const index = availableRoles.indexOf(role);
     if (index >= 0) {
       availableRoles.splice(index, 1);
@@ -137,21 +209,20 @@ export function buildAiSuggestion(
   answers: AiAnswers,
   rematchCount: number,
 ): MatchSuggestion | undefined {
-  const virtualUser: User = {
-    ...currentUser,
-    profile: {
-      ...currentUser.profile,
-      rolePreference: answers.rolePreference,
-      skills: answers.skills,
-      availability: answers.availability,
-      goalLevel: answers.goalLevel,
-      workingStyle: answers.workingStyle,
-    },
+  const currentMatching: MatchingProfile = {
+    userId: currentUser.id,
+    rolePreference: answers.rolePreference,
+    skills: answers.skills,
+    availability: answers.availability,
+    goalLevel: answers.goalLevel,
+    workingStyle: answers.workingStyle,
+    secondaryRole: resolveMatchingProfile(state, currentUser.id).secondaryRole,
+    updatedAt: new Date().toISOString(),
   };
 
   const candidates = getAvailableStudents(state, project.id, currentUser.id)
-    .map((candidate) => ({ candidate, score: scoreCandidate(virtualUser, candidate) }))
-    .sort((left, right) => right.score - left.score || left.candidate.name.localeCompare(right.candidate.name))
+    .map((candidate) => ({ candidate, score: scoreCandidate(currentMatching, candidate.matching) }))
+    .sort((left, right) => right.score - left.score || left.candidate.user.name.localeCompare(right.candidate.user.name))
     .map((entry) => entry.candidate);
 
   if (!candidates.length) {
@@ -159,31 +230,30 @@ export function buildAiSuggestion(
   }
 
   const teamMates = rotate(candidates, rematchCount).slice(0, Math.max(project.teamSize - 1, 1));
-  const roles = assignRoles(project, currentUser, teamMates, answers.rolePreference);
+  const roles = assignRoles(project, currentUser.id, currentMatching, teamMates, answers.rolePreference);
 
   return {
-    candidateIds: teamMates.map((candidate) => candidate.id),
-    reasons: buildReasons(virtualUser, teamMates, Object.values(roles)),
-    compatibilitySummary: teamMates.map((candidate) => {
-      const sharedSkills = candidate.profile.skills.filter((skill) => answers.skills.includes(skill));
-      const sharedAvailability = candidate.profile.availability.filter((slot) =>
+    candidateIds: teamMates.map((candidate) => candidate.user.id),
+    reasons: buildReasons(currentMatching, teamMates, Object.values(roles)),
+    compatibilitySummary: teamMates.map(({ user, matching }) => {
+      const sharedSkills = matching.skills.filter((skill) => answers.skills.includes(skill));
+      const sharedAvailability = matching.availability.filter((slot) =>
         answers.availability.includes(slot),
       );
-      return `${candidate.name}: ${
+      return `${user.name}: ${
         sharedSkills.length
           ? `shared strengths in ${sharedSkills.slice(0, 2).join(" and ")}`
-          : `adds ${candidate.profile.skills.slice(0, 2).join(" and ")}`
+          : `adds ${matching.skills.slice(0, 2).join(" and ")}`
       }, with ${sharedAvailability.length ? sharedAvailability.join("/") : "complementary"} availability.`;
     }),
     roleAssignments: roles,
   };
 }
 
-function matchesConstraints(candidate: User, constraints: QueueConstraints): boolean {
-  const hasAvailability =
-    overlapCount(candidate.profile.availability, constraints.availability) > 0;
-  const goalMatch = candidate.profile.goalLevel === constraints.goalLevel;
-  const styleMatch = candidate.profile.workingStyle === constraints.workingStyle;
+function matchesConstraints(candidate: MatchingProfile, constraints: QueueConstraints): boolean {
+  const hasAvailability = overlapCount(candidate.availability, constraints.availability) > 0;
+  const goalMatch = candidate.goalLevel === constraints.goalLevel;
+  const styleMatch = candidate.workingStyle === constraints.workingStyle;
 
   if (constraints.strictness === "must") {
     return hasAvailability && goalMatch && styleMatch;
@@ -201,8 +271,9 @@ export function buildQueueSuggestion(
   constraints: QueueConstraints,
   requeueCount: number,
 ): MatchSuggestion | undefined {
+  const currentMatching = resolveMatchingProfile(state, currentUser.id);
   const candidates = getAvailableStudents(state, project.id, currentUser.id).filter((candidate) =>
-    matchesConstraints(candidate, constraints),
+    matchesConstraints(candidate.matching, constraints),
   );
 
   if (!candidates.length) {
@@ -214,7 +285,7 @@ export function buildQueueSuggestion(
   };
 
   const remainingRoles = project.roleTemplates.filter((role) => role !== primaryRole);
-  const selected: User[] = [];
+  const selected: Array<{ user: User; matching: MatchingProfile }> = [];
 
   remainingRoles.forEach((role, index) => {
     if (selected.length >= project.teamSize - 1) {
@@ -223,15 +294,15 @@ export function buildQueueSuggestion(
 
     const ordered = rotate(
       candidates
-        .filter((candidate) => !selected.some((picked) => picked.id === candidate.id))
+        .filter((candidate) => !selected.some((picked) => picked.user.id === candidate.user.id))
         .map((candidate) => ({
           candidate,
           score:
-            scoreCandidate(currentUser, candidate, role) +
-            (candidate.profile.secondaryRole === role ? 2 : 0) +
+            scoreCandidate(currentMatching, candidate.matching, role) +
+            (candidate.matching.secondaryRole === role ? 2 : 0) +
             (secondaryRole === role ? 1 : 0),
         }))
-        .sort((left, right) => right.score - left.score || left.candidate.name.localeCompare(right.candidate.name))
+        .sort((left, right) => right.score - left.score || left.candidate.user.name.localeCompare(right.candidate.user.name))
         .map((entry) => entry.candidate),
       requeueCount + index,
     );
@@ -242,37 +313,41 @@ export function buildQueueSuggestion(
     }
 
     selected.push(match);
-    assignments[match.id] = role;
+    assignments[match.user.id] = role;
   });
 
   const fallbacks = rotate(
-    candidates.filter((candidate) => !selected.some((picked) => picked.id === candidate.id)),
+    candidates.filter((candidate) => !selected.some((picked) => picked.user.id === candidate.user.id)),
     requeueCount,
   );
+
   while (selected.length < project.teamSize - 1 && fallbacks.length) {
     const fallback = fallbacks.shift();
     if (!fallback) {
       break;
     }
     selected.push(fallback);
-    assignments[fallback.id] =
-      assignments[fallback.id] ||
-      fallback.profile.rolePreference ||
-      fallback.profile.secondaryRole ||
-      inferRole(fallback.profile);
+    assignments[fallback.user.id] =
+      assignments[fallback.user.id] ||
+      fallback.matching.rolePreference ||
+      fallback.matching.secondaryRole ||
+      "Analyst";
   }
 
   return {
-    candidateIds: selected.map((candidate) => candidate.id),
+    candidateIds: selected.map((candidate) => candidate.user.id),
     reasons: [
-      `Role coverage is staged around ${[primaryRole, ...Object.values(assignments).filter((role) => role !== primaryRole)].join(", ")}.`,
+      `Role coverage is staged around ${[
+        primaryRole,
+        ...Object.values(assignments).filter((role) => role !== primaryRole),
+      ].join(", ")}.`,
       `Queue filters prioritized ${sentenceCase(constraints.workingStyle)} collaboration with ${sentenceCase(constraints.goalLevel)} goals.`,
       constraints.availability.length
         ? `Meeting overlap exists on ${constraints.availability.map(sentenceCase).join(", ")}.`
         : "Availability is flexible across the current roster.",
     ],
-    compatibilitySummary: selected.map((candidate) => {
-      return `${candidate.name}: ${inferRole(candidate.profile)} lead, ${candidate.profile.workingStyle} workflow, ${candidate.profile.goalLevel.replace(/-/g, " ")} goal.`;
+    compatibilitySummary: selected.map(({ user, matching }) => {
+      return `${user.name}: ${matching.rolePreference} lead, ${matching.workingStyle} workflow, ${matching.goalLevel.replace(/-/g, " ")} goal.`;
     }),
     roleAssignments: assignments,
   };
@@ -319,19 +394,61 @@ export function buildTeamArtifacts(
   };
 }
 
-export function resolveCurrentProject(state: AppState, userId: string): ProjectRecord | undefined {
-  const membership = [...state.memberships]
+export function resolveStudentProjects(state: AppState, userId: string): ProjectRecord[] {
+  const projectIds = [...state.memberships]
     .filter((item) => item.userId === userId && item.status === "active" && item.projectId)
-    .sort((left, right) => right.joinedAt.localeCompare(left.joinedAt))[0];
+    .sort((left, right) => right.joinedAt.localeCompare(left.joinedAt))
+    .map((membership) => membership.projectId)
+    .filter((projectId, index, all): projectId is string => Boolean(projectId) && all.indexOf(projectId) === index);
 
-  return membership
-    ? state.projects.find((project) => project.id === membership.projectId)
-    : undefined;
+  return projectIds
+    .map((projectId) => state.projects.find((project) => project.id === projectId))
+    .filter((project): project is ProjectRecord => Boolean(project));
 }
 
-export function resolveCurrentTeam(state: AppState, userId: string): TeamRecord | undefined {
-  const membership = [...state.memberships]
+export function resolveCurrentProject(
+  state: AppState,
+  userId: string,
+  preferredProjectId?: string,
+): ProjectRecord | undefined {
+  const projects = resolveStudentProjects(state, userId);
+
+  if (preferredProjectId) {
+    const preferred = projects.find((project) => project.id === preferredProjectId);
+    if (preferred) {
+      return preferred;
+    }
+  }
+
+  return projects[0];
+}
+
+export function resolveStudentTeams(state: AppState, userId: string): TeamRecord[] {
+  const teamIds = [...state.memberships]
     .filter((item) => item.userId === userId && item.status === "active" && item.projectId && item.teamId)
+    .sort((left, right) => right.joinedAt.localeCompare(left.joinedAt))
+    .map((membership) => membership.teamId)
+    .filter((teamId, index, all): teamId is string => Boolean(teamId) && all.indexOf(teamId) === index);
+
+  return teamIds
+    .map((teamId) => state.teams.find((team) => team.id === teamId))
+    .filter((team): team is TeamRecord => Boolean(team));
+}
+
+export function resolveCurrentTeam(
+  state: AppState,
+  userId: string,
+  projectId?: string,
+): TeamRecord | undefined {
+  const membership = [...state.memberships]
+    .filter(
+      (item) =>
+        item.userId === userId &&
+        item.status === "active" &&
+        item.projectId &&
+        item.teamId &&
+        (!projectId || item.projectId === projectId),
+    )
     .sort((left, right) => right.joinedAt.localeCompare(left.joinedAt))[0];
 
   return membership ? state.teams.find((team) => team.id === membership.teamId) : undefined;

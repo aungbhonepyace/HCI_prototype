@@ -13,10 +13,14 @@ import {
   VerifiedBadge,
 } from "@/components/ui";
 import { useApp } from "@/lib/app-context";
+import { resolveMatchingProfile } from "@/lib/matching";
 import type {
   AiAnswers,
   AvailabilitySlot,
+  ContactMethod,
   GoalLevel,
+  MeetingPreference,
+  ResponseTime,
   ProjectRole,
   QueueConstraints,
   ReportCategory,
@@ -27,8 +31,11 @@ import type {
 import {
   AI_CHAT_STEPS,
   AVAILABILITY_OPTIONS,
+  CONTACT_METHOD_OPTIONS,
   GOAL_OPTIONS,
+  MEETING_PREFERENCE_OPTIONS,
   ROLE_OPTIONS,
+  RESPONSE_TIME_OPTIONS,
   STYLE_OPTIONS,
   cn,
   formatDate,
@@ -57,6 +64,86 @@ function getProjectPeers(projectId: string | undefined, memberships: ReturnType<
   return users.filter((user) => memberIds.includes(user.id));
 }
 
+function getMatchingSnapshot(state: ReturnType<typeof useApp>["state"], userId: string) {
+  return resolveMatchingProfile(state, userId);
+}
+
+function ProjectScopePicker({
+  currentProjectId,
+  projects,
+  state,
+  userId,
+  onSelect,
+  title = "Your projects",
+  description = "Switch the active project to open a different team workspace or run matching for another class.",
+}: {
+  currentProjectId?: string;
+  projects: ReturnType<typeof useApp>["studentProjects"];
+  state: ReturnType<typeof useApp>["state"];
+  userId: string;
+  onSelect: (projectId: string) => void;
+  title?: string;
+  description?: string;
+}) {
+  if (projects.length <= 1) {
+    return null;
+  }
+
+  return (
+    <section className="panel p-6 md:p-8">
+      <p className="subtle-label">{title}</p>
+      <p className="mt-3 max-w-3xl text-sm text-ink/65">{description}</p>
+      <div className="mt-5 grid gap-4 xl:grid-cols-2">
+        {projects.map((project) => {
+          const membership = state.memberships.find(
+            (entry) =>
+              entry.userId === userId &&
+              entry.projectId === project.id &&
+              entry.status === "active",
+          );
+          const classRecord = state.classes.find((entry) => entry.id === project.classId);
+          const team = membership?.teamId
+            ? state.teams.find((entry) => entry.id === membership.teamId)
+            : undefined;
+
+          return (
+            <article
+              key={project.id}
+              className={cn(
+                "rounded-[24px] border p-5 transition",
+                currentProjectId === project.id ? "border-ink bg-sand/50" : "border-ink/10 bg-white",
+              )}
+            >
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="font-heading text-2xl font-semibold text-ink">{project.name}</h3>
+                    {currentProjectId === project.id ? <Badge tone="soft">Selected</Badge> : null}
+                  </div>
+                  <p className="mt-2 text-sm text-ink/65">{classRecord?.name || "Class project"}</p>
+                  <p className="mt-2 text-sm text-ink/55">Deadline {formatDeadline(project.deadline)}</p>
+                </div>
+                <div className="flex flex-wrap gap-2 md:justify-end">
+                  <Badge tone={team ? "success" : "soft"}>{team ? "Team active" : "No team yet"}</Badge>
+                  <Badge tone="soft">{project.joinCode}</Badge>
+                </div>
+              </div>
+              <p className="mt-4 text-sm text-ink/65">{project.description}</p>
+              <button
+                type="button"
+                className="btn-secondary mt-5"
+                onClick={() => onSelect(project.id)}
+              >
+                {currentProjectId === project.id ? "Currently active" : "Switch to this project"}
+              </button>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function completionScore({
   hasProfile,
   hasProject,
@@ -70,29 +157,33 @@ function completionScore({
 }
 
 export function StudentDashboardPage() {
-  const { currentProject, currentTeam, currentUser, state } = useApp();
+  const {
+    activeProjectId,
+    currentProject,
+    currentTeam,
+    currentUser,
+    setActiveProject,
+    state,
+    studentProjects,
+    studentTeams,
+  } = useApp();
 
   if (!currentUser) {
     return null;
   }
 
+  const currentMatching = getMatchingSnapshot(state, currentUser.id);
   const profileReady =
-    currentUser.profile.skills.length > 0 &&
     Boolean(currentUser.profile.bio.trim()) &&
-    currentUser.profile.availability.length > 0;
+    Boolean(currentUser.profile.timeZone.trim()) &&
+    Boolean(currentUser.profile.preferredContactMethod) &&
+    Boolean(currentUser.profile.responseTime) &&
+    Boolean(currentUser.profile.meetingPreference);
   const progress = completionScore({
     hasProfile: profileReady,
-    hasProject: Boolean(currentProject),
-    hasTeam: Boolean(currentTeam),
+    hasProject: studentProjects.length > 0,
+    hasTeam: studentTeams.length > 0,
   });
-  const joinedProjects = state.projects.filter((project) =>
-    state.memberships.some(
-      (membership) =>
-        membership.userId === currentUser.id &&
-        membership.projectId === project.id &&
-        membership.status === "active",
-    ),
-  );
 
   return (
     <div className="space-y-4 md:space-y-6">
@@ -129,18 +220,26 @@ export function StudentDashboardPage() {
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Onboarding" value={`${progress}/4`} detail="Verified, profile, project, team" />
-        <StatCard label="Projects" value={joinedProjects.length} detail="Active memberships on this account" />
+        <StatCard label="Projects" value={studentProjects.length} detail="Active memberships on this account" />
         <StatCard
           label="Deadline"
           value={currentProject ? formatDeadline(currentProject.deadline) : "Join first"}
           detail={currentProject ? currentProject.name : "No active project selected"}
         />
         <StatCard
-          label="Team mode"
-          value={currentTeam ? sentenceCase(currentTeam.createdByMode) : "Pending"}
-          detail={currentTeam ? "Workspace is available now" : "Choose AI chat or Lucky Draw"}
+          label="Teams"
+          value={studentTeams.length}
+          detail={currentTeam ? `Selected project: ${sentenceCase(currentTeam.createdByMode)}` : "No team on selected project yet"}
         />
       </div>
+
+      <ProjectScopePicker
+        currentProjectId={activeProjectId}
+        projects={studentProjects}
+        state={state}
+        userId={currentUser.id}
+        onSelect={setActiveProject}
+      />
 
       {!currentProject ? (
         <EmptyState
@@ -199,13 +298,14 @@ export function StudentDashboardPage() {
             <div className="panel-muted p-5">
               <p className="subtle-label">Profile readiness</p>
               <p className="mt-3 text-sm text-ink/70">
-                Skills: {currentUser.profile.skills.join(", ") || "Add 2-3 skills"}
+                Bio: {currentUser.profile.bio.trim() ? "Added" : "Add a short introduction"}
               </p>
               <p className="mt-2 text-sm text-ink/70">
-                Availability:{" "}
-                {currentUser.profile.availability.length
-                  ? currentUser.profile.availability.map(sentenceCase).join(", ")
-                  : "Pick your meeting windows"}
+                Contact: {currentUser.profile.preferredContactMethod} • {currentUser.profile.responseTime}
+              </p>
+              <p className="mt-2 text-sm text-ink/70">
+                Matching snapshot: {currentMatching.rolePreference} •{" "}
+                {currentMatching.availability.map(sentenceCase).join(", ") || "Set in AI chat or queue"}
               </p>
             </div>
           </section>
@@ -275,23 +375,21 @@ export function StudentJoinPage() {
 export function StudentProfilePage() {
   const { currentUser, updateCurrentUser } = useApp();
   const [name, setName] = useState(currentUser?.name || "");
+  const [email, setEmail] = useState(currentUser?.email || "");
   const [bio, setBio] = useState(currentUser?.profile.bio || "");
-  const [skills, setSkills] = useState(currentUser?.profile.skills.join(", ") || "");
-  const [availability, setAvailability] = useState<AvailabilitySlot[]>(
-    currentUser?.profile.availability || [],
+  const [major, setMajor] = useState(currentUser?.profile.major || "");
+  const [year, setYear] = useState(currentUser?.profile.year || "");
+  const [preferredContactMethod, setPreferredContactMethod] = useState<ContactMethod>(
+    currentUser?.profile.preferredContactMethod || "Email",
   );
-  const [goalLevel, setGoalLevel] = useState<GoalLevel>(
-    currentUser?.profile.goalLevel || "balanced",
+  const [responseTime, setResponseTime] = useState<ResponseTime>(
+    currentUser?.profile.responseTime || "same day",
   );
-  const [workingStyle, setWorkingStyle] = useState<WorkingStyle>(
-    currentUser?.profile.workingStyle || "collab",
+  const [meetingPreference, setMeetingPreference] = useState<MeetingPreference>(
+    currentUser?.profile.meetingPreference || "Mixed",
   );
-  const [rolePreference, setRolePreference] = useState<ProjectRole>(
-    currentUser?.profile.rolePreference || "UI/Design",
-  );
-  const [secondaryRole, setSecondaryRole] = useState<ProjectRole | "">(
-    currentUser?.profile.secondaryRole || "",
-  );
+  const [timeZone, setTimeZone] = useState(currentUser?.profile.timeZone || "");
+  const [notes, setNotes] = useState(currentUser?.profile.notes || "");
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
@@ -299,13 +397,15 @@ export function StudentProfilePage() {
       return;
     }
     setName(currentUser.name);
+    setEmail(currentUser.email);
     setBio(currentUser.profile.bio);
-    setSkills(currentUser.profile.skills.join(", "));
-    setAvailability(currentUser.profile.availability);
-    setGoalLevel(currentUser.profile.goalLevel);
-    setWorkingStyle(currentUser.profile.workingStyle);
-    setRolePreference(currentUser.profile.rolePreference);
-    setSecondaryRole(currentUser.profile.secondaryRole || "");
+    setMajor(currentUser.profile.major);
+    setYear(currentUser.profile.year);
+    setPreferredContactMethod(currentUser.profile.preferredContactMethod);
+    setResponseTime(currentUser.profile.responseTime);
+    setMeetingPreference(currentUser.profile.meetingPreference);
+    setTimeZone(currentUser.profile.timeZone);
+    setNotes(currentUser.profile.notes);
   }, [currentUser]);
 
   if (!currentUser) {
@@ -316,86 +416,75 @@ export function StudentProfilePage() {
     <div className="space-y-4 md:space-y-6">
       <PageIntro
         eyebrow="Transparent profile"
-        title="Tell classmates how you work."
-        description="Profiles are visible during matching and inside team rosters. Keep your role preference, availability, and working style current."
+        title="Keep your teammate profile current."
+        description="This page covers identity, communication preferences, and meeting logistics. Matching preferences now live only inside the AI chat and Lucky Draw flows."
       />
 
       <div className="grid gap-4 xl:grid-cols-[1fr,0.8fr]">
         <section className="panel grid gap-5 p-6 md:grid-cols-2 md:p-8">
-          <Field label="Display name">
+          <Field label="Full name">
             <input className="input" value={name} onChange={(event) => setName(event.target.value)} />
           </Field>
-          <Field label="Primary role">
+          <Field label="University email">
+            <input className="input" value={email} onChange={(event) => setEmail(event.target.value)} />
+          </Field>
+          <Field label="Verified status">
+            <div className="flex min-h-[68px] items-center rounded-[24px] border border-ink/10 px-5">
+              <VerifiedBadge />
+            </div>
+          </Field>
+          <Field label="Preferred contact method">
             <select
               className="input"
-              value={rolePreference}
-              onChange={(event) => setRolePreference(event.target.value as ProjectRole)}
+              value={preferredContactMethod}
+              onChange={(event) => setPreferredContactMethod(event.target.value as ContactMethod)}
             >
-              {ROLE_OPTIONS.map((role) => (
-                <option key={role} value={role}>
-                  {role}
+              {CONTACT_METHOD_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {option}
                 </option>
               ))}
             </select>
           </Field>
-          <Field label="Secondary role">
+          <Field label="Typical response time">
             <select
               className="input"
-              value={secondaryRole}
-              onChange={(event) => setSecondaryRole(event.target.value as ProjectRole | "")}
+              value={responseTime}
+              onChange={(event) => setResponseTime(event.target.value as ResponseTime)}
             >
-              <option value="">Optional</option>
-              {ROLE_OPTIONS.map((role) => (
-                <option key={role} value={role}>
-                  {role}
+              {RESPONSE_TIME_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {option}
                 </option>
               ))}
             </select>
           </Field>
-          <Field label="Skills" hint="Comma-separated works well for the demo.">
+          <Field label="Meeting preference">
+            <select
+              className="input"
+              value={meetingPreference}
+              onChange={(event) => setMeetingPreference(event.target.value as MeetingPreference)}
+            >
+              {MEETING_PREFERENCE_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Time zone">
             <input
               className="input"
-              value={skills}
-              onChange={(event) => setSkills(event.target.value)}
-              placeholder="React, Figma, SQL"
+              value={timeZone}
+              onChange={(event) => setTimeZone(event.target.value)}
+              placeholder="Asia/Bangkok"
             />
           </Field>
-          <div className="md:col-span-2">
-            <Field label="Availability">
-              <div className="flex flex-wrap gap-3">
-                {AVAILABILITY_OPTIONS.map((slot) => (
-                  <OptionChip
-                    key={slot}
-                    selected={availability.includes(slot)}
-                    onClick={() => setAvailability(toggleInArray(availability, slot))}
-                  >
-                    {sentenceCase(slot)}
-                  </OptionChip>
-                ))}
-              </div>
-            </Field>
-          </div>
-          <Field label="Goal level">
-            <div className="flex flex-wrap gap-3">
-              {GOAL_OPTIONS.map((goal) => (
-                <OptionChip key={goal} selected={goalLevel === goal} onClick={() => setGoalLevel(goal)}>
-                  {sentenceCase(goal)}
-                </OptionChip>
-              ))}
-            </div>
+          <Field label="Major (optional)">
+            <input className="input" value={major} onChange={(event) => setMajor(event.target.value)} />
           </Field>
-          <Field label="Working style">
-            <div className="flex flex-wrap gap-3">
-              {STYLE_OPTIONS.map((style) => (
-                <OptionChip
-                  key={style}
-                  selected={workingStyle === style}
-                  onClick={() => setWorkingStyle(style)}
-                >
-                  {sentenceCase(style)}
-                </OptionChip>
-              ))}
-            </div>
+          <Field label="Year (optional)">
+            <input className="input" value={year} onChange={(event) => setYear(event.target.value)} />
           </Field>
           <div className="md:col-span-2">
             <Field label="Bio">
@@ -403,7 +492,17 @@ export function StudentProfilePage() {
                 className="textarea"
                 value={bio}
                 onChange={(event) => setBio(event.target.value)}
-                placeholder="What kind of teammate are you?"
+                placeholder="Short about me"
+              />
+            </Field>
+          </div>
+          <div className="md:col-span-2">
+            <Field label="Notes / boundaries">
+              <textarea
+                className="textarea"
+                value={notes}
+                onChange={(event) => setNotes(event.target.value)}
+                placeholder="Anything classmates should know before planning meetings or communication."
               />
             </Field>
           </div>
@@ -412,17 +511,16 @@ export function StudentProfilePage() {
             onClick={() => {
               updateCurrentUser({
                 name,
+                email,
                 profile: {
                   bio,
-                  skills: skills
-                    .split(",")
-                    .map((item) => item.trim())
-                    .filter(Boolean),
-                  availability,
-                  goalLevel,
-                  workingStyle,
-                  rolePreference,
-                  secondaryRole: secondaryRole || undefined,
+                  major,
+                  year,
+                  preferredContactMethod,
+                  responseTime,
+                  meetingPreference,
+                  timeZone,
+                  notes,
                 },
               });
               setSaved(true);
@@ -438,10 +536,10 @@ export function StudentProfilePage() {
           <div className="flex items-center gap-4">
             <Avatar user={currentUser} />
             <div>
-              <p className="font-semibold text-ink">{currentUser.name}</p>
+              <p className="font-semibold text-ink">{name || currentUser.name}</p>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <VerifiedBadge />
-                <RolePill role={rolePreference} />
+                <Badge tone="soft">{meetingPreference}</Badge>
               </div>
             </div>
           </div>
@@ -449,16 +547,12 @@ export function StudentProfilePage() {
             <p className="subtle-label">Preview</p>
             <p className="mt-3 text-sm text-ink/70">{bio || "Add a short teammate bio."}</p>
             <p className="mt-4 text-sm text-ink/70">
-              Skills:{" "}
-              {skills
-                .split(",")
-                .map((item) => item.trim())
-                .filter(Boolean)
-                .join(", ") || "None listed"}
+              {email || "Add a university email"} • {preferredContactMethod} • {responseTime}
             </p>
             <p className="mt-2 text-sm text-ink/70">
-              Availability: {availability.length ? availability.map(sentenceCase).join(", ") : "None"}
+              {major || "Major optional"} {year ? `• ${year}` : ""} • {timeZone || "Add a time zone"}
             </p>
+            <p className="mt-2 text-sm text-ink/70">{notes || "No extra boundaries or notes added yet."}</p>
           </div>
         </section>
       </div>
@@ -467,7 +561,15 @@ export function StudentProfilePage() {
 }
 
 export function MatchModePickerPage() {
-  const { currentProject, currentTeam, currentUser } = useApp();
+  const {
+    activeProjectId,
+    currentProject,
+    currentTeam,
+    currentUser,
+    setActiveProject,
+    state,
+    studentProjects,
+  } = useApp();
 
   if (!currentProject) {
     return (
@@ -479,26 +581,6 @@ export function MatchModePickerPage() {
     );
   }
 
-  if (currentTeam) {
-    return (
-      <EmptyState
-        title="A team already exists for you"
-        body="Open your workspace to continue with chat, tasks, meeting planning, or reporting."
-        action={<Link to="/student/team" className="btn-primary">Open team workspace</Link>}
-      />
-    );
-  }
-
-  if (currentUser?.flags.matchingRestricted) {
-    return (
-      <EmptyState
-        title="Matching is currently unavailable"
-        body="An instructor has restricted this account from forming new teams. Check notifications for the moderation record."
-        action={<Link to="/student/notifications" className="btn-primary">View notifications</Link>}
-      />
-    );
-  }
-
   return (
     <div className="space-y-4 md:space-y-6">
       <PageIntro
@@ -506,6 +588,31 @@ export function MatchModePickerPage() {
         title="Choose how you want GroupFinder to build your roster."
         description="Both flows are transparent and deterministic. You can accept a result or cycle again before locking in a team."
       />
+
+      <ProjectScopePicker
+        currentProjectId={activeProjectId}
+        projects={studentProjects}
+        state={state}
+        userId={currentUser?.id || ""}
+        onSelect={setActiveProject}
+        title="Match for a specific project"
+        description="Each class project keeps its own team. Switch the active project here before starting AI chat or Lucky Draw."
+      />
+
+      {currentTeam ? (
+        <AccessBanner
+          title={`A team already exists for ${currentProject.name}`}
+          description="You can open the workspace for this selected project, or switch projects above to form a team somewhere else."
+        />
+      ) : null}
+
+      {currentUser?.flags.matchingRestricted ? (
+        <AccessBanner
+          tone="warn"
+          title="Matching is currently unavailable"
+          description="An instructor has restricted this account from forming new teams. You can still switch projects and review any existing team workspaces."
+        />
+      ) : null}
 
       <div className="grid gap-4 xl:grid-cols-2">
         <article className="panel p-6 md:p-8">
@@ -519,7 +626,10 @@ export function MatchModePickerPage() {
             <li>Accept or rematch with saved history</li>
             <li>Best when you want a more reflective prompt flow</li>
           </ul>
-          <Link to="/student/match/ai" className="btn-primary mt-8">
+          <Link
+            to="/student/match/ai"
+            className={cn("btn-primary mt-8", currentTeam || currentUser?.flags.matchingRestricted ? "pointer-events-none opacity-60" : "")}
+          >
             Start AI chat
           </Link>
         </article>
@@ -535,66 +645,125 @@ export function MatchModePickerPage() {
             <li>Queue status, health counts, re-queue controls</li>
             <li>Best when you want a faster, role-anchored path</li>
           </ul>
-          <Link to="/student/match/queue/roles" className="btn-primary mt-8">
+          <Link
+            to="/student/match/queue/roles"
+            className={cn("btn-primary mt-8", currentTeam || currentUser?.flags.matchingRestricted ? "pointer-events-none opacity-60" : "")}
+          >
             Join Lucky Draw
           </Link>
         </article>
       </div>
+
+      {currentTeam ? (
+        <Link to="/student/team" className="btn-secondary">
+          Open current project team
+        </Link>
+      ) : null}
     </div>
   );
 }
 
 export function AIChatPage() {
-  const { currentUser, runAiMatch } = useApp();
+  const { currentProject, currentUser, runAiMatch, state } = useApp();
   const navigate = useNavigate();
+  const currentMatching = currentUser ? getMatchingSnapshot(state, currentUser.id) : undefined;
+  const currentSession = getCurrentAiSession(currentUser?.id, currentProject?.id, state.aiSessions);
   const [stepIndex, setStepIndex] = useState(0);
-  const [skillsDraft, setSkillsDraft] = useState<string[]>(currentUser?.profile.skills || []);
+  const [skillsDraft, setSkillsDraft] = useState<string[]>(
+    currentSession?.answers?.skills || currentMatching?.skills || [],
+  );
   const [availabilityDraft, setAvailabilityDraft] = useState<AvailabilitySlot[]>(
-    currentUser?.profile.availability || [],
+    currentSession?.answers?.availability || currentMatching?.availability || [],
   );
   const [answers, setAnswers] = useState<Partial<AiAnswers>>({
-    rolePreference: currentUser?.profile.rolePreference || "UI/Design",
-    goalLevel: currentUser?.profile.goalLevel || "balanced",
-    workingStyle: currentUser?.profile.workingStyle || "collab",
+    rolePreference: currentSession?.answers?.rolePreference || currentMatching?.rolePreference || "UI/Design",
+    goalLevel: currentSession?.answers?.goalLevel || currentMatching?.goalLevel || "balanced",
+    workingStyle: currentSession?.answers?.workingStyle || currentMatching?.workingStyle || "collab",
   });
   const [error, setError] = useState<string | null>(null);
 
-  const currentStep = AI_CHAT_STEPS[stepIndex];
+  useEffect(() => {
+    if (!currentUser) {
+      return;
+    }
+    const nextMatching = getMatchingSnapshot(state, currentUser.id);
+    const nextSession = getCurrentAiSession(currentUser.id, currentProject?.id, state.aiSessions);
+    setSkillsDraft(nextSession?.answers?.skills || nextMatching.skills);
+    setAvailabilityDraft(nextSession?.answers?.availability || nextMatching.availability);
+    setAnswers({
+      rolePreference: nextSession?.answers?.rolePreference || nextMatching.rolePreference,
+      goalLevel: nextSession?.answers?.goalLevel || nextMatching.goalLevel,
+      workingStyle: nextSession?.answers?.workingStyle || nextMatching.workingStyle,
+      skills: nextSession?.answers?.skills,
+      availability: nextSession?.answers?.availability,
+    });
+  }, [currentProject?.id, currentUser, state]);
 
-  function submitCurrentMultiSelect() {
+  const currentStep = AI_CHAT_STEPS[stepIndex];
+  const isCurrentStepComplete =
+    currentStep.id === "skills"
+      ? skillsDraft.length > 0
+      : currentStep.id === "availability"
+        ? availabilityDraft.length > 0
+        : currentStep.id === "rolePreference"
+          ? Boolean(answers.rolePreference)
+          : currentStep.id === "goalLevel"
+            ? Boolean(answers.goalLevel)
+            : Boolean(answers.workingStyle);
+
+  function submitCurrentStep() {
+    const nextAnswers: Partial<AiAnswers> = { ...answers };
+
     if (currentStep.id === "skills") {
       if (skillsDraft.length === 0) {
         setError("Pick at least one skill to continue.");
         return;
       }
-      setAnswers((previous) => ({ ...previous, skills: skillsDraft }));
+      nextAnswers.skills = skillsDraft;
     }
+
     if (currentStep.id === "availability") {
       if (availabilityDraft.length === 0) {
         setError("Pick at least one availability window to continue.");
         return;
       }
-      setAnswers((previous) => ({ ...previous, availability: availabilityDraft }));
+      nextAnswers.availability = availabilityDraft;
     }
+
+    if (currentStep.id === "rolePreference" && !nextAnswers.rolePreference) {
+      setError("Choose a role before continuing.");
+      return;
+    }
+
+    if (currentStep.id === "goalLevel" && !nextAnswers.goalLevel) {
+      setError("Choose a goal level before continuing.");
+      return;
+    }
+
+    if (currentStep.id === "workingStyle" && !nextAnswers.workingStyle) {
+      setError("Choose a collaboration style before generating a match.");
+      return;
+    }
+
+    setAnswers(nextAnswers);
     setError(null);
+
     if (stepIndex === AI_CHAT_STEPS.length - 1) {
       const result = runAiMatch({
-        rolePreference: (answers.rolePreference || "UI/Design") as ProjectRole,
-        skills: currentStep.id === "skills" ? skillsDraft : answers.skills || skillsDraft,
-        availability:
-          currentStep.id === "availability"
-            ? availabilityDraft
-            : answers.availability || availabilityDraft,
-        goalLevel: (answers.goalLevel || "balanced") as GoalLevel,
-        workingStyle: (answers.workingStyle || "collab") as WorkingStyle,
+        rolePreference: (nextAnswers.rolePreference || "UI/Design") as ProjectRole,
+        skills: nextAnswers.skills || skillsDraft,
+        availability: nextAnswers.availability || availabilityDraft,
+        goalLevel: (nextAnswers.goalLevel || "balanced") as GoalLevel,
+        workingStyle: (nextAnswers.workingStyle || "collab") as WorkingStyle,
       });
       if (result) {
         navigate("/student/match/ai/result");
       } else {
-        setError("No match suggestion is available yet. Make sure you joined a project.");
+        setError("No eligible classmates are available for this project right now. Try a different project or add more students.");
       }
       return;
     }
+
     setStepIndex((index) => index + 1);
   }
 
@@ -650,10 +819,10 @@ export function AIChatPage() {
                     {option}
                   </OptionChip>
                 ))
-              : currentStep.id === "availability"
-                ? currentStep.options.map((option) => (
-                    <OptionChip
-                      key={option}
+                : currentStep.id === "availability"
+                  ? currentStep.options.map((option) => (
+                      <OptionChip
+                        key={option}
                       selected={availabilityDraft.includes(option)}
                       onClick={() => setAvailabilityDraft(toggleInArray(availabilityDraft, option))}
                     >
@@ -675,29 +844,6 @@ export function AIChatPage() {
                           [currentStep.id]: option,
                         }));
                         setError(null);
-                        if (stepIndex === AI_CHAT_STEPS.length - 1) {
-                          const result = runAiMatch({
-                            rolePreference:
-                              currentStep.id === "rolePreference"
-                                ? (option as ProjectRole)
-                                : ((answers.rolePreference || "UI/Design") as ProjectRole),
-                            skills: answers.skills || skillsDraft,
-                            availability: answers.availability || availabilityDraft,
-                            goalLevel:
-                              currentStep.id === "goalLevel"
-                                ? (option as GoalLevel)
-                                : ((answers.goalLevel || "balanced") as GoalLevel),
-                            workingStyle:
-                              currentStep.id === "workingStyle"
-                                ? (option as WorkingStyle)
-                                : ((answers.workingStyle || "collab") as WorkingStyle),
-                          });
-                          if (result) {
-                            navigate("/student/match/ai/result");
-                          }
-                        } else {
-                          setStepIndex((index) => index + 1);
-                        }
                       }}
                     >
                       {option.includes("-") ? sentenceCase(option) : option}
@@ -705,13 +851,18 @@ export function AIChatPage() {
                   ))}
           </div>
 
+          <p className="mt-4 text-sm text-ink/55">
+            Select your answer, then continue to the next step.
+          </p>
+
           {error ? <p className="mt-4 text-sm text-coral">{error}</p> : null}
 
-          {(currentStep.id === "skills" || currentStep.id === "availability") ? (
-            <button className="btn-primary mt-6" onClick={submitCurrentMultiSelect}>
-              {stepIndex === AI_CHAT_STEPS.length - 1 ? "Generate match" : "Continue"}
-            </button>
-          ) : null}
+          <button
+            className={cn("btn-primary mt-6", !isCurrentStepComplete ? "opacity-70" : "")}
+            onClick={submitCurrentStep}
+          >
+            {stepIndex === AI_CHAT_STEPS.length - 1 ? "Generate match" : "Continue"}
+          </button>
         </div>
       </div>
     </div>
@@ -750,17 +901,31 @@ export function AIResultPage() {
           <div className="grid gap-4 md:grid-cols-2">
             {roster.map((user) => (
               <article key={user.id} className="panel-muted p-5">
-                <div className="flex min-w-0 items-start gap-3">
-                  <Avatar user={user} />
-                  <div className="min-w-0">
-                    <p className="font-semibold text-ink">{user.name}</p>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      <VerifiedBadge />
-                      <RolePill role={result.roleAssignments[user.id]} />
-                    </div>
-                  </div>
-                </div>
-                <p className="mt-4 text-sm text-ink/65">{user.profile.bio}</p>
+                {(() => {
+                  const matching = getMatchingSnapshot(state, user.id);
+                  return (
+                    <>
+                      <div className="flex min-w-0 items-start gap-3">
+                        <Avatar user={user} />
+                        <div className="min-w-0">
+                          <p className="font-semibold text-ink">{user.name}</p>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <VerifiedBadge />
+                            <RolePill role={result.roleAssignments[user.id]} />
+                          </div>
+                        </div>
+                      </div>
+                      <p className="mt-4 text-sm text-ink/65">{user.profile.bio}</p>
+                      <p className="mt-3 text-sm text-ink/65">
+                        Skills: {matching.skills.slice(0, 3).join(", ") || "None listed"}
+                      </p>
+                      <p className="mt-2 text-sm text-ink/65">
+                        {matching.availability.map(sentenceCase).join(", ") || "Flexible"} •{" "}
+                        {sentenceCase(matching.goalLevel)} • {sentenceCase(matching.workingStyle)}
+                      </p>
+                    </>
+                  );
+                })()}
               </article>
             ))}
           </div>
@@ -825,10 +990,22 @@ export function QueueRolePage() {
   const { currentProject, currentUser, saveQueueRoles, state } = useApp();
   const navigate = useNavigate();
   const queue = getCurrentQueueSession(currentUser?.id, currentProject?.id, state.queueSessions);
+  const currentMatching = currentUser ? getMatchingSnapshot(state, currentUser.id) : undefined;
+  const roleOptions = currentProject?.roleTemplates.length ? currentProject.roleTemplates : ROLE_OPTIONS;
   const [primaryRole, setPrimaryRole] = useState<ProjectRole>(
-    queue?.primaryRole || currentUser?.profile.rolePreference || "UI/Design",
+    queue?.primaryRole || currentMatching?.rolePreference || roleOptions[0] || "UI/Design",
   );
   const [secondaryRole, setSecondaryRole] = useState<ProjectRole | "">(queue?.secondaryRole || "");
+
+  if (!currentProject) {
+    return (
+      <EmptyState
+        title="Join a project before using Lucky Draw"
+        body="Queue-based matching only works once your account is attached to an active project."
+        action={<Link to="/student/join" className="btn-primary">Join a project</Link>}
+      />
+    );
+  }
 
   return (
     <div className="space-y-4 md:space-y-6">
@@ -839,7 +1016,7 @@ export function QueueRolePage() {
       />
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {ROLE_OPTIONS.map((role) => (
+        {roleOptions.map((role) => (
           <button
             key={role}
             type="button"
@@ -851,7 +1028,9 @@ export function QueueRolePage() {
           >
             <RolePill role={role} />
             <h2 className="mt-4 font-heading text-2xl font-semibold text-ink">{role}</h2>
-            <p className="mt-3 text-sm text-ink/65">{ROLE_DESCRIPTIONS[role]}</p>
+            <p className="mt-3 text-sm text-ink/65">
+              {ROLE_DESCRIPTIONS[role] || "Custom role configured for this project template."}
+            </p>
           </button>
         ))}
       </div>
@@ -859,7 +1038,7 @@ export function QueueRolePage() {
       <section className="panel p-6 md:p-8">
         <Field label="Secondary role (optional)">
           <div className="flex flex-wrap gap-3">
-            {ROLE_OPTIONS.map((role) => (
+            {roleOptions.map((role) => (
               <OptionChip
                 key={role}
                 selected={secondaryRole === role}
@@ -888,14 +1067,15 @@ export function QueueConstraintsPage() {
   const { currentProject, currentUser, enterQueue, saveQueueConstraints, state } = useApp();
   const navigate = useNavigate();
   const queue = getCurrentQueueSession(currentUser?.id, currentProject?.id, state.queueSessions);
+  const currentMatching = currentUser ? getMatchingSnapshot(state, currentUser.id) : undefined;
   const [availability, setAvailability] = useState<AvailabilitySlot[]>(
-    queue?.constraints?.availability || currentUser?.profile.availability || [],
+    queue?.constraints?.availability || currentMatching?.availability || [],
   );
   const [goalLevel, setGoalLevel] = useState<GoalLevel>(
-    queue?.constraints?.goalLevel || currentUser?.profile.goalLevel || "balanced",
+    queue?.constraints?.goalLevel || currentMatching?.goalLevel || "balanced",
   );
   const [workingStyle, setWorkingStyle] = useState<WorkingStyle>(
-    queue?.constraints?.workingStyle || currentUser?.profile.workingStyle || "collab",
+    queue?.constraints?.workingStyle || currentMatching?.workingStyle || "collab",
   );
   const [strictness, setStrictness] = useState<QueueConstraints["strictness"]>(
     queue?.constraints?.strictness || "prefer",
@@ -1010,6 +1190,7 @@ export function QueueStatusPage() {
   const peers = getProjectPeers(currentProject.id, state.memberships, state.users).filter(
     (user) => user.id !== currentUser?.id,
   );
+  const roleOptions = currentProject.roleTemplates.length ? currentProject.roleTemplates : ROLE_OPTIONS;
 
   return (
     <div className="space-y-4 md:space-y-6">
@@ -1073,14 +1254,16 @@ export function QueueStatusPage() {
           <article className="panel p-6">
             <p className="subtle-label">Role demand</p>
             <div className="mt-4 space-y-3">
-              {ROLE_OPTIONS.map((role) => (
+              {roleOptions.map((role) => (
                 <div key={role} className="flex items-center justify-between rounded-[20px] border border-ink/10 px-4 py-3 text-sm">
                   <span>{role}</span>
                   <span className="font-semibold text-ink/70">
                     {
                       peers.filter(
-                        (user) =>
-                          user.profile.rolePreference === role || user.profile.secondaryRole === role,
+                        (user) => {
+                          const matching = getMatchingSnapshot(state, user.id);
+                          return matching.rolePreference === role || matching.secondaryRole === role;
+                        },
                       ).length
                     }
                   </span>
@@ -1127,19 +1310,30 @@ export function QueueMatchPage() {
           <div className="grid gap-4 md:grid-cols-2">
             {roster.map((user) => (
               <article key={user.id} className="panel-muted p-5">
-                <div className="flex min-w-0 items-start gap-3">
-                  <Avatar user={user} />
-                  <div className="min-w-0">
-                    <p className="font-semibold text-ink">{user.name}</p>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      <VerifiedBadge />
-                      <RolePill role={result.roleAssignments[user.id]} />
-                    </div>
-                  </div>
-                </div>
-                <p className="mt-4 text-sm text-ink/65">
-                  {user.profile.skills.slice(0, 3).join(", ")} • {sentenceCase(user.profile.workingStyle)}
-                </p>
+                {(() => {
+                  const matching = getMatchingSnapshot(state, user.id);
+                  return (
+                    <>
+                      <div className="flex min-w-0 items-start gap-3">
+                        <Avatar user={user} />
+                        <div className="min-w-0">
+                          <p className="font-semibold text-ink">{user.name}</p>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <VerifiedBadge />
+                            <RolePill role={result.roleAssignments[user.id]} />
+                          </div>
+                        </div>
+                      </div>
+                      <p className="mt-4 text-sm text-ink/65">
+                        Skills: {matching.skills.slice(0, 3).join(", ") || "None listed"}
+                      </p>
+                      <p className="mt-2 text-sm text-ink/65">
+                        {matching.availability.map(sentenceCase).join(", ") || "Flexible"} •{" "}
+                        {sentenceCase(matching.goalLevel)} • {sentenceCase(matching.workingStyle)}
+                      </p>
+                    </>
+                  );
+                })()}
               </article>
             ))}
           </div>
@@ -1199,16 +1393,66 @@ export function QueueMatchPage() {
 }
 
 export function TeamWorkspacePage() {
-  const { currentTeam, currentUser, sendTeamMessage, setMeetingTime, state, toggleTask } = useApp();
+  const {
+    activeProjectId,
+    currentProject,
+    currentTeam,
+    currentUser,
+    sendTeamMessage,
+    setActiveProject,
+    setMeetingTime,
+    state,
+    studentProjects,
+    studentTeams,
+    toggleTask,
+  } = useApp();
   const [message, setMessage] = useState("");
 
-  if (!currentTeam || !currentUser) {
+  if (!currentUser) {
+    return null;
+  }
+
+  if (!currentProject) {
     return (
-      <EmptyState
-        title="No active team yet"
-        body="Accept an AI or queue match to create the team workspace."
-        action={<Link to="/student/match" className="btn-primary">Open matching</Link>}
-      />
+      <div className="space-y-4 md:space-y-6">
+        <EmptyState
+          title="No project selected yet"
+          body="Join a project first, then you can form or open a team for that class workspace."
+          action={<Link to="/student/join" className="btn-primary">Join a project</Link>}
+        />
+      </div>
+    );
+  }
+
+  if (!currentTeam) {
+    return (
+      <div className="space-y-4 md:space-y-6">
+        <PageIntro
+          eyebrow="Team workspace"
+          title={`No team is active for ${currentProject.name}.`}
+          description="Each project keeps its own workspace. Switch projects below if you already have another team elsewhere, or start matching for the selected project."
+        />
+
+        <ProjectScopePicker
+          currentProjectId={activeProjectId}
+          projects={studentProjects}
+          state={state}
+          userId={currentUser.id}
+          onSelect={setActiveProject}
+          title="Project workspaces"
+          description="Select the project whose team workspace you want to open."
+        />
+
+        <EmptyState
+          title="No team on this project yet"
+          body={
+            studentTeams.length
+              ? "You do have team workspaces on other projects. Switch above to open them, or form a new team for this selected project."
+              : "Accept an AI or queue match to create the first team workspace."
+          }
+          action={<Link to="/student/match" className="btn-primary">Open matching</Link>}
+        />
+      </div>
     );
   }
 
@@ -1220,8 +1464,18 @@ export function TeamWorkspacePage() {
     <div className="space-y-4 md:space-y-6">
       <PageIntro
         eyebrow="Team workspace"
-        title="One place for roster, chat, tasks, meeting, and reporting."
-        description="Everything here is stored locally and survives refresh. Use the report links on the team or specific chat messages if something goes wrong."
+        title={`Workspace for ${currentProject.name}`}
+        description="Everything here is stored locally and survives refresh. Use the project switcher when you need to jump between multiple class teams."
+      />
+
+      <ProjectScopePicker
+        currentProjectId={activeProjectId}
+        projects={studentProjects}
+        state={state}
+        userId={currentUser.id}
+        onSelect={setActiveProject}
+        title="Switch team workspace"
+        description="A student can belong to multiple project teams. Select another project here to open its roster, chat, tasks, and meeting plan."
       />
 
       {currentUser.flags.chatMuted ? (
@@ -1455,7 +1709,6 @@ export function NotificationsPage() {
 
 export function ReportPage() {
   const { currentTeam, currentUser, state, submitReport } = useApp();
-  const navigate = useNavigate();
   const [params] = useSearchParams();
   const [targetType, setTargetType] = useState<TargetType>(
     (params.get("targetType") as TargetType) || "user",
@@ -1465,24 +1718,23 @@ export function ReportPage() {
   const [severity, setSeverity] = useState<ReportSeverity>("medium");
   const [description, setDescription] = useState("");
   const [evidence, setEvidence] = useState("");
+  const [submitState, setSubmitState] = useState<"idle" | "success" | "error">("idle");
+  const [submitMessage, setSubmitMessage] = useState("");
 
-  const teamMembers = currentTeam
-    ? state.users.filter((user) => currentTeam.memberIds.includes(user.id))
-    : [];
   const teamMessages = state.teamChat.find((bucket) => bucket.teamId === currentTeam?.id)?.messages || [];
   const targetOptions =
     targetType === "team"
-      ? currentTeam
-        ? [{ id: currentTeam.id, label: "Current team workspace" }]
-        : []
+        ? currentTeam
+          ? [{ id: currentTeam.id, label: "Current team workspace" }]
+          : []
       : targetType === "message"
         ? teamMessages.map((message) => ({
             id: message.id,
             label: `${state.users.find((user) => user.id === message.userId)?.name || "Unknown"}: ${message.content.slice(0, 30)}`,
           }))
-        : teamMembers
-            .filter((member) => member.id !== currentUser?.id)
-            .map((member) => ({ id: member.id, label: member.name }));
+        : state.users
+            .filter((user) => user.role === "student" && user.id !== currentUser?.id)
+            .map((user) => ({ id: user.id, label: user.name }));
 
   return (
     <div className="space-y-4 md:space-y-6">
@@ -1570,17 +1822,43 @@ export function ReportPage() {
             />
           </Field>
         </div>
+        {submitState !== "idle" ? (
+          <div
+            className={cn(
+              "rounded-[20px] px-4 py-3 text-sm md:col-span-2",
+              submitState === "success"
+                ? "bg-tide/10 text-tide"
+                : "bg-coral/10 text-coral",
+            )}
+          >
+            {submitMessage}
+          </div>
+        ) : null}
         <button
           className="btn-primary md:col-span-2"
           onClick={() => {
             if (!targetId || !description.trim()) {
+              setSubmitState("error");
+              setSubmitMessage("Choose a target and add a description before submitting.");
               return;
             }
-            submitReport({ targetType, targetId, category, severity, description, evidence });
-            navigate("/student/notifications");
+            const result = submitReport({
+              targetType,
+              targetId,
+              category,
+              severity,
+              description,
+              evidence,
+            });
+            setSubmitState(result.ok ? "success" : "error");
+            setSubmitMessage(result.message);
+            if (result.ok) {
+              setDescription("");
+              setEvidence("");
+            }
           }}
         >
-          Submit report
+          {submitState === "success" ? "Report sent" : "Submit report"}
         </button>
       </section>
     </div>

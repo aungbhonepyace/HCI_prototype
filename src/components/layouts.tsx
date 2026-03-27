@@ -1,4 +1,4 @@
-import { Outlet, Navigate } from "react-router-dom";
+import { Link, Outlet, Navigate } from "react-router-dom";
 import { useApp } from "@/lib/app-context";
 import { Badge, LogoMark, NavItem, VerifiedBadge } from "@/components/ui";
 import { cn } from "@/lib/utils";
@@ -58,7 +58,7 @@ function ShellFrame({
   footerLinks?: { to: string; label: string }[];
   roleLabel: string;
 }) {
-  const { currentUser, currentProject, logout, state } = useApp();
+  const { currentUser, currentProject, logout, state, studentProjects } = useApp();
 
   return (
     <div className="min-h-screen bg-mesh">
@@ -69,9 +69,12 @@ function ShellFrame({
             <div className="mt-8 rounded-[24px] bg-sand/70 p-4">
               <p className="subtle-label">{roleLabel}</p>
               <p className="mt-2 font-heading text-2xl font-semibold text-ink">{currentUser?.name}</p>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
+              <div className="mt-3 flex min-w-0 flex-wrap items-start gap-2">
                 <VerifiedBadge />
                 {currentProject ? <Badge tone="soft">{currentProject.name}</Badge> : null}
+                {currentUser?.role === "student" && studentProjects.length > 1 ? (
+                  <Badge tone="soft">{studentProjects.length} projects</Badge>
+                ) : null}
               </div>
             </div>
             <nav className="mt-8 grid gap-2">
@@ -91,7 +94,13 @@ function ShellFrame({
               <p className="mt-2 text-sm text-white/75">
                 Keep an eye on updates, report actions, and team activity.
               </p>
-              <button className="btn-secondary mt-5 w-full bg-white text-ink" onClick={() => logout()}>
+              <Link
+                to={currentUser?.role === "admin" ? "/admin/notifications" : "/student/notifications"}
+                className="btn-secondary mt-5 w-full bg-white text-ink"
+              >
+                Open notifications
+              </Link>
+              <button className="btn-secondary mt-3 w-full bg-white text-ink" onClick={() => logout()}>
                 Logout
               </button>
             </div>

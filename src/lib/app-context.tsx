@@ -11,12 +11,18 @@ import {
   buildQueueSuggestion,
   buildTeamArtifacts,
   resolveCurrentProject,
+  resolveStudentProjects,
+  resolveStudentTeams,
   resolveCurrentTeam,
 } from "@/lib/matching";
 import {
+  DEMO_ACCOUNT_PASSWORD,
+  buildDefaultMatchingProfile,
   buildNewUser,
   createProjectRecord,
   defaultProjectPayload,
+  hashPassword,
+  isPasswordStrong,
   loadState,
   persistState,
 } from "@/lib/storage";
@@ -25,6 +31,7 @@ import type {
   AppState,
   AuthState,
   MatchSuggestion,
+  MatchingProfile,
   ProjectRecord,
   ProjectRole,
   QueueConstraints,
@@ -38,11 +45,19 @@ import { createId, formatDate, generateJoinCode } from "@/lib/utils";
 
 interface AppContextValue {
   state: AppState;
+  activeProjectId?: string;
   currentUser?: User;
   currentProject?: ProjectRecord;
   currentTeam?: TeamRecord;
+  studentProjects: ProjectRecord[];
+  studentTeams: TeamRecord[];
   currentMembershipProjectIds: string[];
-  login: (email: string, role: AuthState["role"]) => void;
+  setActiveProject: (projectId: string) => void;
+  login: (
+    email: string,
+    password: string,
+    role: AuthState["role"],
+  ) => { ok: boolean; message: string };
   logout: () => void;
   updateCurrentUser: (payload: Partial<User> & { profile?: Partial<UserProfile> }) => void;
   joinProject: (joinCode: string) => { ok: boolean; message: string };
@@ -85,7 +100,7 @@ interface AppContextValue {
   sendTeamMessage: (content: string) => { ok: boolean; message?: string };
   toggleTask: (taskId: string) => void;
   setMeetingTime: (meetingTime: string) => void;
-  submitReport: (payload: ReportFormInput) => void;
+  submitReport: (payload: ReportFormInput) => { ok: boolean; message: string };
   markNotificationRead: (notificationId: string) => void;
   markAllNotificationsRead: () => void;
   adminActOnReport: (
@@ -96,6 +111,28 @@ interface AppContextValue {
 }
 
 const AppContext = createContext<AppContextValue | undefined>(undefined);
+const ACTIVE_PROJECT_KEY = "gf_active_project";
+
+function readActiveProjectId(): string | undefined {
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+
+  return window.sessionStorage.getItem(ACTIVE_PROJECT_KEY) || undefined;
+}
+
+function writeActiveProjectId(projectId?: string): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  if (!projectId) {
+    window.sessionStorage.removeItem(ACTIVE_PROJECT_KEY);
+    return;
+  }
+
+  window.sessionStorage.setItem(ACTIVE_PROJECT_KEY, projectId);
+}
 
 function pushNotification(
   state: AppState,
@@ -137,15 +174,74 @@ function getOrCreateQueueSession(state: AppState, userId: string, projectId: str
   );
 }
 
-function buildStudentDefaults(user: User): UserProfile {
+function attachMembersToProject(
+  state: AppState,
+  memberIds: string[],
+  project: ProjectRecord,
+  teamId: string,
+): AppState {
+  const attached = new Set<string>();
+  const updatedMemberships = state.memberships.map((membership) => {
+    if (
+      memberIds.includes(membership.userId) &&
+      membership.projectId === project.id &&
+      membership.status === "active"
+    ) {
+      attached.add(membership.userId);
+      return { ...membership, classId: project.classId, teamId };
+    }
+
+    return membership;
+  });
+
+  const newMemberships = memberIds
+    .filter((memberId) => !attached.has(memberId))
+    .map((memberId) => ({
+      id: createId("membership"),
+      userId: memberId,
+      classId: project.classId,
+      projectId: project.id,
+      status: "active" as const,
+      joinedAt: new Date().toISOString(),
+      teamId,
+    }));
+
   return {
-    skills: user.profile.skills,
-    availability: user.profile.availability,
-    goalLevel: user.profile.goalLevel,
-    workingStyle: user.profile.workingStyle,
-    bio: user.profile.bio,
-    rolePreference: user.profile.rolePreference,
-    secondaryRole: user.profile.secondaryRole,
+    ...state,
+    memberships: [...newMemberships, ...updatedMemberships],
+  };
+}
+
+function buildStudentDefaults(user: User): UserProfile {
+  return { ...user.profile };
+}
+
+function getMatchingProfile(state: AppState, userId: string): MatchingProfile {
+  return (
+    state.matchingProfiles.find((profile) => profile.userId === userId) ||
+    buildDefaultMatchingProfile(userId)
+  );
+}
+
+function upsertMatchingProfile(
+  state: AppState,
+  userId: string,
+  patch: Partial<MatchingProfile>,
+): AppState {
+  const existing = getMatchingProfile(state, userId);
+  const nextProfile: MatchingProfile = {
+    ...existing,
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  };
+
+  return {
+    ...state,
+    matchingProfiles: state.matchingProfiles.some((profile) => profile.userId === userId)
+      ? state.matchingProfiles.map((profile) =>
+          profile.userId === userId ? nextProfile : profile,
+        )
+      : [nextProfile, ...state.matchingProfiles],
   };
 }
 
@@ -190,6 +286,9 @@ function resolveTargetContext(state: AppState, targetType: ReportFormInput["targ
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AppState>(() => loadState());
+  const [activeProjectId, setActiveProjectId] = useState<string | undefined>(() =>
+    readActiveProjectId(),
+  );
   const stateRef = useRef(state);
 
   useEffect(() => {
@@ -207,19 +306,86 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const currentUser = state.auth
     ? state.users.find((user) => user.id === state.auth?.userId)
     : undefined;
-  const currentProject = currentUser ? resolveCurrentProject(state, currentUser.id) : undefined;
-  const currentTeam = currentUser ? resolveCurrentTeam(state, currentUser.id) : undefined;
+  const studentProjects =
+    currentUser?.role === "student" ? resolveStudentProjects(state, currentUser.id) : [];
+  const studentTeams =
+    currentUser?.role === "student" ? resolveStudentTeams(state, currentUser.id) : [];
+  const currentProject =
+    currentUser?.role === "student"
+      ? resolveCurrentProject(state, currentUser.id, activeProjectId)
+      : undefined;
+  const currentTeam =
+    currentUser?.role === "student" && currentProject
+      ? resolveCurrentTeam(state, currentUser.id, currentProject.id)
+      : undefined;
+
+  useEffect(() => {
+    if (!currentUser || currentUser.role !== "student") {
+      if (activeProjectId) {
+        setActiveProjectId(undefined);
+        writeActiveProjectId(undefined);
+      }
+      return;
+    }
+
+    const fallbackProjectId = studentProjects[0]?.id;
+    const nextProjectId =
+      activeProjectId && studentProjects.some((project) => project.id === activeProjectId)
+        ? activeProjectId
+        : fallbackProjectId;
+
+    if (nextProjectId !== activeProjectId) {
+      setActiveProjectId(nextProjectId);
+    }
+    writeActiveProjectId(nextProjectId);
+  }, [activeProjectId, currentUser, studentProjects]);
 
   const value: AppContextValue = {
     state,
+    activeProjectId,
     currentUser,
     currentProject,
     currentTeam,
+    studentProjects,
+    studentTeams,
     currentMembershipProjectIds: getCurrentMembershipProjectIds(state, currentUser?.id),
-    login(email, role) {
+    setActiveProject(projectId) {
+      setActiveProjectId(projectId);
+      writeActiveProjectId(projectId);
+    },
+    login(email, password, role) {
       const normalized = email.trim().toLowerCase();
+      const trimmedPassword = password.trim();
       if (!normalized) {
-        return;
+        return { ok: false, message: "Enter your university email." };
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+        return { ok: false, message: "Enter a valid email address." };
+      }
+      if (!trimmedPassword) {
+        return { ok: false, message: "Enter your password." };
+      }
+
+      const matchingUser = stateRef.current.users.find(
+        (entry) => entry.email.toLowerCase() === normalized && entry.role === role,
+      );
+      const existingByEmail = stateRef.current.users.find(
+        (entry) => entry.email.toLowerCase() === normalized,
+      );
+      if (!matchingUser && existingByEmail && existingByEmail.role !== role) {
+        return {
+          ok: false,
+          message: `This email is registered as ${existingByEmail.role}. Switch the login role and try again.`,
+        };
+      }
+      if (matchingUser && matchingUser.passwordHash !== hashPassword(trimmedPassword)) {
+        return { ok: false, message: "Incorrect password." };
+      }
+      if (!matchingUser && !existingByEmail && !isPasswordStrong(trimmedPassword)) {
+        return {
+          ok: false,
+          message: "Use at least 8 characters with uppercase, lowercase, and a number.",
+        };
       }
 
       commit((previous) => {
@@ -229,7 +395,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           ) || null;
         let nextUsers = previous.users;
         if (!user) {
-          user = buildNewUser(normalized, role);
+          user = buildNewUser(normalized, role, trimmedPassword);
           nextUsers = [user, ...previous.users];
         } else if (!user.verified) {
           nextUsers = previous.users.map((entry) =>
@@ -237,8 +403,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
           );
         }
 
+        let nextState: AppState =
+          nextUsers !== previous.users ? { ...previous, users: nextUsers } : previous;
+        if (!nextState.matchingProfiles.some((profile) => profile.userId === user.id)) {
+          nextState = upsertMatchingProfile(
+            nextState,
+            user.id,
+            buildDefaultMatchingProfile(user.id),
+          );
+        }
+
         return {
-          ...previous,
+          ...nextState,
           users: nextUsers,
           auth: {
             userId: user.id,
@@ -246,8 +422,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
           },
         };
       });
+
+      return {
+        ok: true,
+        message: matchingUser
+          ? "Login successful."
+          : "Verified account created and signed in.",
+      };
     },
     logout() {
+      setActiveProjectId(undefined);
+      writeActiveProjectId(undefined);
       commit((previous) => ({ ...previous, auth: null }));
     },
     updateCurrentUser(payload) {
@@ -346,6 +531,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return next;
       });
 
+      setActiveProjectId(project.id);
+      writeActiveProjectId(project.id);
       return { ok: true, message: "Joined successfully." };
     },
     createClass(payload) {
@@ -405,22 +592,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
         profile: {
           ...buildStudentDefaults(baseUser),
           ...payload.profile,
-          skills: payload.profile.skills || baseUser.profile.skills,
-          availability: payload.profile.availability || baseUser.profile.availability,
           bio: payload.profile.bio ?? baseUser.profile.bio,
-          goalLevel: payload.profile.goalLevel || baseUser.profile.goalLevel,
-          workingStyle: payload.profile.workingStyle || baseUser.profile.workingStyle,
-          rolePreference: payload.profile.rolePreference || baseUser.profile.rolePreference,
-          secondaryRole: payload.profile.secondaryRole,
         },
       };
 
-      commit((previous) => ({
-        ...previous,
-        users: [nextUser, ...previous.users],
-      }));
+      commit((previous) =>
+        upsertMatchingProfile(
+          {
+            ...previous,
+            users: [nextUser, ...previous.users],
+          },
+          nextUser.id,
+          buildDefaultMatchingProfile(nextUser.id),
+        ),
+      );
 
-      return { ok: true, message: "Student created.", userId: nextUser.id };
+      return {
+        ok: true,
+        message: `Student created. Temporary password: ${DEMO_ACCOUNT_PASSWORD}`,
+        userId: nextUser.id,
+      };
     },
     adminUpdateStudent(userId, payload) {
       if (!currentUser || currentUser.role !== "admin") {
@@ -461,16 +652,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 profile: {
                   ...user.profile,
                   ...payload.profile,
-                  skills: payload.profile.skills || user.profile.skills,
-                  availability: payload.profile.availability || user.profile.availability,
                   bio: payload.profile.bio ?? user.profile.bio,
-                  goalLevel: payload.profile.goalLevel || user.profile.goalLevel,
-                  workingStyle: payload.profile.workingStyle || user.profile.workingStyle,
-                  rolePreference: payload.profile.rolePreference || user.profile.rolePreference,
-                  secondaryRole:
-                    payload.profile.secondaryRole === undefined
-                      ? user.profile.secondaryRole
-                      : payload.profile.secondaryRole,
                 },
               }
             : user,
@@ -656,12 +838,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
           updatedAt: new Date().toISOString(),
         };
 
-        return {
+        return upsertMatchingProfile({
           ...previous,
           aiSessions: existing
             ? previous.aiSessions.map((item) => (item.id === existing.id ? session : item))
             : [session, ...previous.aiSessions],
-        };
+        },
+        currentUser.id,
+        {
+          rolePreference: answers.rolePreference,
+          skills: answers.skills,
+          availability: answers.availability,
+          goalLevel: answers.goalLevel,
+          workingStyle: answers.workingStyle,
+        });
       });
 
       return result;
@@ -729,17 +919,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       );
 
       commit((previous) => {
-        let next: AppState = {
-          ...previous,
-          teams: [artifacts.team, ...previous.teams],
-          teamChat: [artifacts.chatBucket, ...previous.teamChat],
-          teamTasks: [artifacts.taskBucket, ...previous.teamTasks],
-          memberships: previous.memberships.map((membership) =>
-            memberIds.includes(membership.userId) && membership.projectId === currentProject.id
-              ? { ...membership, teamId: artifacts.team.id }
-              : membership,
-          ),
-        };
+        let next = attachMembersToProject(
+          {
+            ...previous,
+            teams: [artifacts.team, ...previous.teams],
+            teamChat: [artifacts.chatBucket, ...previous.teamChat],
+            teamTasks: [artifacts.taskBucket, ...previous.teamTasks],
+          },
+          memberIds,
+          currentProject,
+          artifacts.team.id,
+        );
 
         memberIds.forEach((memberId) => {
           next = pushNotification(
@@ -770,12 +960,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
           updatedAt: new Date().toISOString(),
         };
 
-        return {
+        return upsertMatchingProfile({
           ...previous,
           queueSessions: previous.queueSessions.some((item) => item.id === existing.id)
             ? previous.queueSessions.map((item) => (item.id === existing.id ? session : item))
             : [session, ...previous.queueSessions],
-        };
+        },
+        currentUser.id,
+        {
+          rolePreference: primaryRole,
+          secondaryRole,
+        });
       });
     },
     saveQueueConstraints(constraints) {
@@ -791,12 +986,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
           updatedAt: new Date().toISOString(),
         };
 
-        return {
+        return upsertMatchingProfile({
           ...previous,
           queueSessions: previous.queueSessions.some((item) => item.id === existing.id)
             ? previous.queueSessions.map((item) => (item.id === existing.id ? session : item))
             : [session, ...previous.queueSessions],
-        };
+        },
+        currentUser.id,
+        {
+          availability: constraints.availability,
+          goalLevel: constraints.goalLevel,
+          workingStyle: constraints.workingStyle,
+        });
       });
     },
     enterQueue() {
@@ -927,17 +1128,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       );
 
       commit((previous) => {
-        let next: AppState = {
-          ...previous,
-          teams: [artifacts.team, ...previous.teams],
-          teamChat: [artifacts.chatBucket, ...previous.teamChat],
-          teamTasks: [artifacts.taskBucket, ...previous.teamTasks],
-          memberships: previous.memberships.map((membership) =>
-            memberIds.includes(membership.userId) && membership.projectId === currentProject.id
-              ? { ...membership, teamId: artifacts.team.id }
-              : membership,
-          ),
-        };
+        let next = attachMembersToProject(
+          {
+            ...previous,
+            teams: [artifacts.team, ...previous.teams],
+            teamChat: [artifacts.chatBucket, ...previous.teamChat],
+            teamTasks: [artifacts.taskBucket, ...previous.teamTasks],
+          },
+          memberIds,
+          currentProject,
+          artifacts.team.id,
+        );
 
         memberIds.forEach((memberId) => {
           next = pushNotification(
@@ -1026,7 +1227,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     submitReport(payload) {
       if (!currentUser) {
-        return;
+        return { ok: false, message: "You must be logged in to submit a report." };
       }
 
       commit((previous) => {
@@ -1073,6 +1274,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
         return next;
       });
+
+      return { ok: true, message: "Report submitted successfully." };
     },
     markNotificationRead(notificationId) {
       commit((previous) => ({

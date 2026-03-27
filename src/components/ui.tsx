@@ -52,7 +52,13 @@ export function Badge({
           : "bg-ink/6 text-ink/70";
 
   return (
-    <span className={cn("inline-flex max-w-full break-all rounded-full px-3 py-1 text-xs font-semibold", toneClass)}>
+    <span
+      className={cn(
+        "inline-flex min-h-[2.25rem] max-w-full items-center justify-center rounded-full px-3 py-1.5 text-center text-xs font-semibold leading-tight align-middle",
+        "whitespace-normal break-words",
+        toneClass,
+      )}
+    >
       {children}
     </span>
   );
@@ -97,7 +103,7 @@ export function PageIntro({
         <h1 className="font-heading text-3xl font-semibold text-ink md:text-5xl">{title}</h1>
         <p className="mt-3 max-w-xl text-sm text-ink/70 md:text-base">{description}</p>
       </div>
-      {actions ? <div className="flex max-w-full flex-wrap gap-3 md:justify-end">{actions}</div> : null}
+      {actions ? <div className="flex max-w-full flex-wrap items-start gap-3 md:justify-end">{actions}</div> : null}
     </div>
   );
 }
@@ -114,7 +120,7 @@ export function StatCard({
   return (
     <div className="panel-muted p-5">
       <p className="subtle-label">{label}</p>
-      <p className="mt-3 break-words font-heading text-2xl font-semibold text-ink md:text-3xl">{value}</p>
+      <p className="mt-3 break-words font-heading text-2xl font-semibold leading-tight text-ink md:text-3xl">{value}</p>
       <p className="mt-2 text-sm text-ink/65">{detail}</p>
     </div>
   );
@@ -152,7 +158,7 @@ export function OptionChip({
       type="button"
       onClick={onClick}
       className={cn(
-        "rounded-full border px-4 py-2 text-sm font-semibold transition",
+        "inline-flex min-h-[44px] max-w-full items-center justify-center rounded-full border px-4 py-2 text-center text-sm font-semibold leading-tight transition",
         selected
           ? "border-ink bg-ink text-white"
           : "border-ink/10 bg-white text-ink hover:border-tide hover:text-tide",
@@ -193,7 +199,17 @@ export function RolePill({ role }: { role: ProjectRole }) {
           : role === "Writer/Presenter"
             ? "bg-gold/35 text-ink"
             : getCustomRoleTone(role);
-  return <span className={cn("max-w-full break-words rounded-full px-3 py-1 text-xs font-semibold", tone)}>{role}</span>;
+  return (
+    <span
+      className={cn(
+        "inline-flex min-h-[2.25rem] max-w-full items-center justify-center rounded-full px-3 py-1.5 text-center text-xs font-semibold leading-tight",
+        "whitespace-normal break-words align-middle",
+        tone,
+      )}
+    >
+      {role}
+    </span>
+  );
 }
 
 export function NavItem({
@@ -210,7 +226,7 @@ export function NavItem({
       to={to}
       className={({ isActive }) =>
         cn(
-          "rounded-2xl px-4 py-3 text-sm font-semibold transition",
+          "inline-flex min-h-[44px] items-center justify-center rounded-2xl px-4 py-3 text-sm font-semibold leading-tight transition",
           compact ? "px-2 py-2 text-center text-[11px] leading-tight" : "",
           compact ? "whitespace-normal" : "",
           isActive

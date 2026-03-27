@@ -6,6 +6,12 @@ export type GoalLevel = "aiming-for-a" | "balanced" | "pass-focus";
 
 export type WorkingStyle = "quiet" | "collab" | "async";
 
+export type ContactMethod = "Line" | "Discord" | "WhatsApp" | "Email" | "Other";
+
+export type ResponseTime = "<2h" | "same day" | "1-2 days";
+
+export type MeetingPreference = "Online" | "On campus" | "Mixed";
+
 export type TargetType = "user" | "message" | "profile" | "team";
 
 export type ReportCategory =
@@ -36,13 +42,25 @@ export interface AuthState {
 }
 
 export interface UserProfile {
+  bio: string;
+  major: string;
+  year: string;
+  preferredContactMethod: ContactMethod;
+  responseTime: ResponseTime;
+  meetingPreference: MeetingPreference;
+  timeZone: string;
+  notes: string;
+}
+
+export interface MatchingProfile {
+  userId: string;
+  rolePreference: ProjectRole;
+  secondaryRole?: ProjectRole;
   skills: string[];
   availability: AvailabilitySlot[];
   goalLevel: GoalLevel;
   workingStyle: WorkingStyle;
-  bio: string;
-  rolePreference: ProjectRole;
-  secondaryRole?: ProjectRole;
+  updatedAt: string;
 }
 
 export interface UserFlags {
@@ -55,6 +73,7 @@ export interface User {
   id: string;
   name: string;
   email: string;
+  passwordHash: string;
   role: AppRole;
   verified: boolean;
   profile: UserProfile;
@@ -218,6 +237,7 @@ export interface ReportRecord {
 export interface AppState {
   auth: AuthState | null;
   users: User[];
+  matchingProfiles: MatchingProfile[];
   classes: ClassRecord[];
   projects: ProjectRecord[];
   memberships: Membership[];

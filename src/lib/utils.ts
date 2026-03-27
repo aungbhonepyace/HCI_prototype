@@ -1,9 +1,11 @@
 import type {
   AvailabilitySlot,
+  ContactMethod,
   GoalLevel,
+  MeetingPreference,
   PresetProjectRole,
   ProjectRole,
-  UserProfile,
+  ResponseTime,
   WorkingStyle,
 } from "@/lib/types";
 
@@ -27,6 +29,22 @@ export const GOAL_OPTIONS: GoalLevel[] = [
 ];
 
 export const STYLE_OPTIONS: WorkingStyle[] = ["quiet", "collab", "async"];
+
+export const CONTACT_METHOD_OPTIONS: ContactMethod[] = [
+  "Line",
+  "Discord",
+  "WhatsApp",
+  "Email",
+  "Other",
+];
+
+export const RESPONSE_TIME_OPTIONS: ResponseTime[] = ["<2h", "same day", "1-2 days"];
+
+export const MEETING_PREFERENCE_OPTIONS: MeetingPreference[] = [
+  "Online",
+  "On campus",
+  "Mixed",
+];
 
 export const AI_CHAT_STEPS = [
   {
@@ -119,19 +137,15 @@ export function generateJoinCode(label: string): string {
   return `GF-${clean || "CLASS"}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 }
 
-export function inferRole(profile: UserProfile): ProjectRole {
-  if (profile.rolePreference) {
-    return profile.rolePreference;
-  }
-
-  const skills = profile.skills.join(" ").toLowerCase();
-  if (/(figma|ui|visual|design)/.test(skills)) {
+export function inferRole(skills: string[]): ProjectRole {
+  const normalized = skills.join(" ").toLowerCase();
+  if (/(figma|ui|visual|design)/.test(normalized)) {
     return "UI/Design";
   }
-  if (/(sql|api|backend|react|typescript|database)/.test(skills)) {
+  if (/(sql|api|backend|react|typescript|database)/.test(normalized)) {
     return "Backend/SQL";
   }
-  if (/(research|analysis|data|survey)/.test(skills)) {
+  if (/(research|analysis|data|survey)/.test(normalized)) {
     return "Analyst";
   }
   return "Writer/Presenter";

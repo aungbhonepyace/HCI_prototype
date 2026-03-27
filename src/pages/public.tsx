@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useApp } from "@/lib/app-context";
 import { Badge, LogoMark, PageIntro, StatCard } from "@/components/ui";
+import { DEMO_ACCOUNT_PASSWORD, validatePasswordStrength } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 
 export function LandingPage() {
@@ -94,12 +95,12 @@ export function LoginPage() {
   const navigate = useNavigate();
   const { login } = useApp();
   const [role, setRole] = useState<"student" | "admin">("student");
-  const [email, setEmail] = useState("priya.nair@groupfinder.edu");
-
-  const demoEmails =
-    role === "student"
-      ? ["priya.nair@groupfinder.edu", "lucas.reed@groupfinder.edu", "zoe.martinez@groupfinder.edu"]
-      : ["mina.hart@groupfinder.edu"];
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [messageTone, setMessageTone] = useState<"success" | "error">("error");
+  const passwordChecks = validatePasswordStrength(password);
 
   return (
     <div className="min-h-screen bg-mesh px-4 py-6 md:px-6 lg:px-8">
@@ -115,10 +116,10 @@ export function LoginPage() {
           <div className="panel p-6 md:p-8">
             <p className="subtle-label">Mock verification</p>
             <h1 className="mt-3 font-heading text-4xl font-semibold text-ink">
-              Verify email and choose your role
+              Sign in with email, password, and role
             </h1>
             <p className="mt-3 max-w-md text-sm text-ink/65">
-              The prototype marks the account as verified immediately and routes you into either the student or admin experience.
+              Existing accounts require the correct password. New emails create a verified demo account instantly when the password meets the minimum policy.
             </p>
 
             <div className="mt-8 space-y-6">
@@ -152,16 +153,64 @@ export function LoginPage() {
                 <input
                   className="input"
                   value={email}
-                  onChange={(event) => setEmail(event.target.value)}
+                  onChange={(event) => {
+                    setEmail(event.target.value);
+                    setMessage(null);
+                  }}
                   placeholder="name@groupfinder.edu"
+                  autoComplete="email"
                 />
               </label>
+
+              <label className="block">
+                <span className="mb-2 block text-sm font-semibold text-ink">Password</span>
+                <div className="flex gap-3">
+                  <input
+                    className="input flex-1"
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                    onChange={(event) => {
+                      setPassword(event.target.value);
+                      setMessage(null);
+                    }}
+                    placeholder="Enter password"
+                    autoComplete="current-password"
+                  />
+                  <button
+                    type="button"
+                    className="btn-secondary shrink-0"
+                    onClick={() => setShowPassword((value) => !value)}
+                  >
+                    {showPassword ? "Hide" : "Show"}
+                  </button>
+                </div>
+              </label>
+
+              <div className="rounded-[24px] border border-ink/10 bg-white/60 p-4">
+                <p className="text-sm font-semibold text-ink">Password policy for new accounts</p>
+                <div className="mt-3 grid gap-2 text-sm text-ink/65">
+                  <p>{passwordChecks.minLength ? "Passed" : "Needed"}: at least 8 characters</p>
+                  <p>{passwordChecks.uppercase ? "Passed" : "Needed"}: one uppercase letter</p>
+                  <p>{passwordChecks.lowercase ? "Passed" : "Needed"}: one lowercase letter</p>
+                  <p>{passwordChecks.digit ? "Passed" : "Needed"}: one number</p>
+                </div>
+              </div>
+
+              {message ? (
+                <p className={cn("text-sm", messageTone === "success" ? "text-tide" : "text-coral")}>
+                  {message}
+                </p>
+              ) : null}
 
               <button
                 className="btn-primary w-full"
                 onClick={() => {
-                  login(email, role);
-                  navigate(role === "student" ? "/student/dashboard" : "/admin");
+                  const result = login(email, password, role);
+                  setMessage(result.message);
+                  setMessageTone(result.ok ? "success" : "error");
+                  if (result.ok) {
+                    navigate(role === "student" ? "/student/dashboard" : "/admin");
+                  }
                 }}
               >
                 Verify and continue
@@ -171,19 +220,16 @@ export function LoginPage() {
 
           <div className="grid gap-4">
             <div className="panel p-6 md:p-8">
-              <p className="subtle-label">Demo accounts</p>
-              <div className="mt-4 flex flex-wrap gap-3">
-                {demoEmails.map((demoEmail) => (
-                  <button
-                    key={demoEmail}
-                    type="button"
-                    onClick={() => setEmail(demoEmail)}
-                    className="rounded-full border border-ink/10 bg-white px-4 py-2 text-sm font-semibold text-ink transition hover:border-tide hover:text-tide"
-                  >
-                    {demoEmail}
-                  </button>
-                ))}
+              <p className="subtle-label">Demo password</p>
+              <p className="mt-4 text-sm text-ink/65">
+                Seeded accounts, migrated legacy accounts, and admin-created student accounts use:
+              </p>
+              <div className="mt-4">
+                <Badge tone="soft">{DEMO_ACCOUNT_PASSWORD}</Badge>
               </div>
+              <p className="mt-4 text-sm text-ink/55">
+                No email or password is prefilled now. Enter credentials manually, or use any seeded email with the demo password above.
+              </p>
             </div>
 
             <div className="grid gap-4 md:grid-cols-2">

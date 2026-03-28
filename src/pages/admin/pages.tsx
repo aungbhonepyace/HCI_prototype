@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { Badge, EmptyState, Field, OptionChip, PageIntro, RolePill, StatCard, VerifiedBadge } from "@/components/ui";
 import { useApp } from "@/lib/app-context";
 import { resolveMatchingProfile } from "@/lib/matching";
-import { defaultProjectPayload } from "@/lib/storage";
+import { defaultProjectPayload, validatePasswordStrength } from "@/lib/storage";
 import type {
   ContactMethod,
   MeetingPreference,
@@ -183,31 +183,39 @@ function ProjectPolicyCard({ project }: { project: ReturnType<typeof useApp>["st
       </div>
 
       <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        <div className="panel-muted p-4">
+        <div className="panel-muted flex min-h-[126px] flex-col justify-between p-4">
           <p className="subtle-label">Students</p>
-          <p className="mt-2 text-2xl font-semibold text-ink">{metrics.enrollmentCount}</p>
+          <p className="mt-4 font-heading text-3xl font-semibold leading-[1.05] text-ink">
+            {metrics.enrollmentCount}
+          </p>
         </div>
-        <div className="panel-muted p-4">
+        <div className="panel-muted flex min-h-[126px] flex-col justify-between p-4">
           <p className="subtle-label">Confirmed teams</p>
-          <p className="mt-2 text-2xl font-semibold text-ink">{metrics.confirmedTeamCount}</p>
+          <p className="mt-4 font-heading text-3xl font-semibold leading-[1.05] text-ink">
+            {metrics.confirmedTeamCount}
+          </p>
         </div>
-        <div className="panel-muted p-4">
+        <div className="panel-muted flex min-h-[126px] flex-col justify-between p-4">
           <p className="subtle-label">Unmatched</p>
-          <p className="mt-2 text-2xl font-semibold text-ink">{metrics.unmatchedCount}</p>
+          <p className="mt-4 font-heading text-3xl font-semibold leading-[1.05] text-ink">
+            {metrics.unmatchedCount}
+          </p>
         </div>
-        <div className="panel-muted p-4">
+        <div className="panel-muted flex min-h-[126px] flex-col justify-between p-4">
           <p className="subtle-label">Volunteers</p>
-          <p className="mt-2 text-2xl font-semibold text-ink">{metrics.volunteersAvailable}</p>
+          <p className="mt-4 font-heading text-3xl font-semibold leading-[1.05] text-ink">
+            {metrics.volunteersAvailable}
+          </p>
         </div>
-        <div className="panel-muted p-4">
+        <div className="panel-muted flex min-h-[126px] flex-col justify-between p-4">
           <p className="subtle-label">Overflow</p>
-          <p className="mt-2 text-2xl font-semibold text-ink">
+          <p className="mt-4 font-heading text-3xl font-semibold leading-[1.05] text-ink">
             {overflow.overflowSlotsFilled}/{setting.overflowTeamsAllowed}
           </p>
         </div>
-        <div className="panel-muted p-4">
+        <div className="panel-muted flex min-h-[126px] flex-col justify-between p-4">
           <p className="subtle-label">Finalized</p>
-          <p className="mt-2 text-lg font-semibold text-ink">
+          <p className="mt-4 font-heading text-2xl font-semibold leading-[1.05] text-ink">
             {overflow.deadlineFinalized ? "Yes" : "Not yet"}
           </p>
         </div>
@@ -296,6 +304,9 @@ export function AdminDashboardPage() {
             <Link to="/admin/classes" className="btn-primary">
               Create class
             </Link>
+            <Link to="/admin/account" className="btn-secondary">
+              Account
+            </Link>
             <Link to="/admin/reports" className="btn-secondary">
               Review reports
             </Link>
@@ -345,21 +356,29 @@ export function AdminDashboardPage() {
                       </Link>
                     </div>
                     <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                      <div className="rounded-[20px] bg-sand/70 px-4 py-3">
+                      <div className="rounded-[20px] bg-sand/70 px-4 py-4">
                         <p className="subtle-label">Students</p>
-                        <p className="mt-2 text-xl font-semibold text-ink">{metrics.enrollmentCount}</p>
+                        <p className="mt-4 font-heading text-2xl font-semibold leading-[1.05] text-ink">
+                          {metrics.enrollmentCount}
+                        </p>
                       </div>
-                      <div className="rounded-[20px] bg-sand/70 px-4 py-3">
+                      <div className="rounded-[20px] bg-sand/70 px-4 py-4">
                         <p className="subtle-label">Confirmed teams</p>
-                        <p className="mt-2 text-xl font-semibold text-ink">{metrics.confirmedTeamCount}</p>
+                        <p className="mt-4 font-heading text-2xl font-semibold leading-[1.05] text-ink">
+                          {metrics.confirmedTeamCount}
+                        </p>
                       </div>
-                      <div className="rounded-[20px] bg-sand/70 px-4 py-3">
+                      <div className="rounded-[20px] bg-sand/70 px-4 py-4">
                         <p className="subtle-label">Unmatched</p>
-                        <p className="mt-2 text-xl font-semibold text-ink">{metrics.unmatchedCount}</p>
+                        <p className="mt-4 font-heading text-2xl font-semibold leading-[1.05] text-ink">
+                          {metrics.unmatchedCount}
+                        </p>
                       </div>
-                      <div className="rounded-[20px] bg-sand/70 px-4 py-3">
+                      <div className="rounded-[20px] bg-sand/70 px-4 py-4">
                         <p className="subtle-label">Volunteers</p>
-                        <p className="mt-2 text-xl font-semibold text-ink">{metrics.volunteersAvailable}</p>
+                        <p className="mt-4 font-heading text-2xl font-semibold leading-[1.05] text-ink">
+                          {metrics.volunteersAvailable}
+                        </p>
                       </div>
                     </div>
                     <p className="mt-4 text-sm text-ink/55">
@@ -390,6 +409,252 @@ export function AdminDashboardPage() {
               <p className="text-sm text-ink/55">No reports yet. Student submissions will appear here.</p>
             ) : null}
           </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+export function AdminAccountPage() {
+  const { adminCreateAdmin, changeCurrentPassword, currentUser, updateCurrentUser } = useApp();
+  const [accountName, setAccountName] = useState(currentUser?.name || "");
+  const [accountEmail, setAccountEmail] = useState(currentUser?.email || "");
+  const [accountMessage, setAccountMessage] = useState<string | null>(null);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [nextPassword, setNextPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [securityMessage, setSecurityMessage] = useState<string | null>(null);
+  const [securityTone, setSecurityTone] = useState<"success" | "error">("error");
+  const [adminName, setAdminName] = useState("");
+  const [adminEmail, setAdminEmail] = useState("");
+  const [adminPassword, setAdminPassword] = useState("");
+  const [adminMessage, setAdminMessage] = useState<string | null>(null);
+  const [adminMessageTone, setAdminMessageTone] = useState<"success" | "error">("error");
+  const nextPasswordChecks = validatePasswordStrength(nextPassword);
+  const adminPasswordChecks = validatePasswordStrength(adminPassword);
+
+  useEffect(() => {
+    setAccountName(currentUser?.name || "");
+    setAccountEmail(currentUser?.email || "");
+  }, [currentUser]);
+
+  return (
+    <div className="space-y-4 md:space-y-6">
+      <PageIntro
+        eyebrow="Account"
+        title="Manage admin access and password security."
+        description="Update your own password here and create additional admin accounts for instructors or TAs."
+      />
+
+      <section className="panel p-6 md:p-8">
+        <p className="subtle-label">Your account</p>
+        <h2 className="mt-3 font-heading text-2xl font-semibold text-ink">Update your admin profile</h2>
+        <p className="mt-3 text-sm text-ink/65">
+          Keep your admin identity fields current for the workspace.
+        </p>
+
+        <div className="mt-6 grid gap-4 md:grid-cols-2">
+          <Field label="Full name">
+            <input
+              className="input"
+              value={accountName}
+              onChange={(event) => {
+                setAccountName(event.target.value);
+                setAccountMessage(null);
+              }}
+            />
+          </Field>
+          <Field label="University email">
+            <input
+              className="input"
+              value={accountEmail}
+              onChange={(event) => {
+                setAccountEmail(event.target.value);
+                setAccountMessage(null);
+              }}
+            />
+          </Field>
+        </div>
+
+        <button
+          className="btn-primary mt-6"
+          onClick={() => {
+            updateCurrentUser({
+              name: accountName,
+              email: accountEmail,
+            });
+            setAccountMessage("Admin account updated locally.");
+          }}
+        >
+          Save account info
+        </button>
+
+        {accountMessage ? <p className="mt-4 text-sm text-tide">{accountMessage}</p> : null}
+      </section>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <section className="panel p-6 md:p-8">
+          <p className="subtle-label">Account security</p>
+          <h2 className="mt-3 font-heading text-2xl font-semibold text-ink">Update your admin password</h2>
+          <p className="mt-3 text-sm text-ink/65">
+            Signed in as {currentUser?.email}. Use your current password first, then set a stronger replacement.
+          </p>
+
+          <div className="mt-6 grid gap-4">
+            <Field label="Current password">
+              <input
+                type="password"
+                className="input"
+                value={currentPassword}
+                onChange={(event) => {
+                  setCurrentPassword(event.target.value);
+                  setSecurityMessage(null);
+                }}
+              />
+            </Field>
+            <Field label="New password">
+              <input
+                type="password"
+                className="input"
+                value={nextPassword}
+                onChange={(event) => {
+                  setNextPassword(event.target.value);
+                  setSecurityMessage(null);
+                }}
+              />
+            </Field>
+            <Field label="Confirm new password">
+              <input
+                type="password"
+                className="input"
+                value={confirmPassword}
+                onChange={(event) => {
+                  setConfirmPassword(event.target.value);
+                  setSecurityMessage(null);
+                }}
+              />
+            </Field>
+          </div>
+
+          <div className="mt-5 rounded-[24px] border border-ink/10 bg-white/60 p-4">
+            <p className="text-sm font-semibold text-ink">Password policy</p>
+            <div className="mt-3 grid gap-2 text-sm text-ink/65">
+              <p>{nextPasswordChecks.minLength ? "Passed" : "Needed"}: at least 8 characters</p>
+              <p>{nextPasswordChecks.uppercase ? "Passed" : "Needed"}: one uppercase letter</p>
+              <p>{nextPasswordChecks.lowercase ? "Passed" : "Needed"}: one lowercase letter</p>
+              <p>{nextPasswordChecks.digit ? "Passed" : "Needed"}: one number</p>
+              <p>{confirmPassword && confirmPassword === nextPassword ? "Passed" : "Needed"}: confirmation matches</p>
+            </div>
+          </div>
+
+          <button
+            className="btn-primary mt-6"
+            onClick={() => {
+              if (nextPassword !== confirmPassword) {
+                setSecurityMessage("New password and confirmation do not match.");
+                setSecurityTone("error");
+                return;
+              }
+
+              const result = changeCurrentPassword(currentPassword, nextPassword);
+              setSecurityMessage(result.message);
+              setSecurityTone(result.ok ? "success" : "error");
+              if (result.ok) {
+                setCurrentPassword("");
+                setNextPassword("");
+                setConfirmPassword("");
+              }
+            }}
+          >
+            Update password
+          </button>
+
+          {securityMessage ? (
+            <p className={cn("mt-4 text-sm", securityTone === "success" ? "text-tide" : "text-coral")}>
+              {securityMessage}
+            </p>
+          ) : null}
+        </section>
+
+        <section className="panel p-6 md:p-8">
+          <p className="subtle-label">Admin accounts</p>
+          <h2 className="mt-3 font-heading text-2xl font-semibold text-ink">Create another admin</h2>
+          <p className="mt-3 text-sm text-ink/65">
+            Add another instructor or TA account with its own login password.
+          </p>
+
+          <div className="mt-6 grid gap-4">
+            <Field label="Full name">
+              <input
+                className="input"
+                value={adminName}
+                onChange={(event) => {
+                  setAdminName(event.target.value);
+                  setAdminMessage(null);
+                }}
+                placeholder="Avery Quinn"
+              />
+            </Field>
+            <Field label="University email">
+              <input
+                className="input"
+                value={adminEmail}
+                onChange={(event) => {
+                  setAdminEmail(event.target.value);
+                  setAdminMessage(null);
+                }}
+                placeholder="avery.quinn@groupfinder.edu"
+              />
+            </Field>
+            <Field label="Initial password">
+              <input
+                type="password"
+                className="input"
+                value={adminPassword}
+                onChange={(event) => {
+                  setAdminPassword(event.target.value);
+                  setAdminMessage(null);
+                }}
+                placeholder="Set a password"
+              />
+            </Field>
+          </div>
+
+          <div className="mt-5 rounded-[24px] border border-ink/10 bg-white/60 p-4">
+            <p className="text-sm font-semibold text-ink">Password policy</p>
+            <div className="mt-3 grid gap-2 text-sm text-ink/65">
+              <p>{adminPasswordChecks.minLength ? "Passed" : "Needed"}: at least 8 characters</p>
+              <p>{adminPasswordChecks.uppercase ? "Passed" : "Needed"}: one uppercase letter</p>
+              <p>{adminPasswordChecks.lowercase ? "Passed" : "Needed"}: one lowercase letter</p>
+              <p>{adminPasswordChecks.digit ? "Passed" : "Needed"}: one number</p>
+            </div>
+          </div>
+
+          <button
+            className="btn-primary mt-6"
+            onClick={() => {
+              const result = adminCreateAdmin({
+                name: adminName,
+                email: adminEmail,
+                password: adminPassword,
+              });
+              setAdminMessage(result.message);
+              setAdminMessageTone(result.ok ? "success" : "error");
+              if (result.ok) {
+                setAdminName("");
+                setAdminEmail("");
+                setAdminPassword("");
+              }
+            }}
+          >
+            Create admin account
+          </button>
+
+          {adminMessage ? (
+            <p className={cn("mt-4 text-sm", adminMessageTone === "success" ? "text-tide" : "text-coral")}>
+              {adminMessage}
+            </p>
+          ) : null}
         </section>
       </div>
     </div>

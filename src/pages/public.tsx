@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useApp } from "@/lib/app-context";
 import { Badge, LogoMark, PageIntro, StatCard } from "@/components/ui";
-import { DEMO_ACCOUNT_PASSWORD, validatePasswordStrength } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 
 export function LandingPage() {
@@ -100,7 +99,6 @@ export function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [messageTone, setMessageTone] = useState<"success" | "error">("error");
-  const passwordChecks = validatePasswordStrength(password);
 
   return (
     <div className="min-h-screen bg-mesh px-4 py-6 md:px-6 lg:px-8">
@@ -186,16 +184,6 @@ export function LoginPage() {
                 </div>
               </label>
 
-              <div className="rounded-[24px] border border-ink/10 bg-white/60 p-4">
-                <p className="text-sm font-semibold text-ink">Password policy for new accounts</p>
-                <div className="mt-3 grid gap-2 text-sm text-ink/65">
-                  <p>{passwordChecks.minLength ? "Passed" : "Needed"}: at least 8 characters</p>
-                  <p>{passwordChecks.uppercase ? "Passed" : "Needed"}: one uppercase letter</p>
-                  <p>{passwordChecks.lowercase ? "Passed" : "Needed"}: one lowercase letter</p>
-                  <p>{passwordChecks.digit ? "Passed" : "Needed"}: one number</p>
-                </div>
-              </div>
-
               {message ? (
                 <p className={cn("text-sm", messageTone === "success" ? "text-tide" : "text-coral")}>
                   {message}
@@ -218,26 +206,11 @@ export function LoginPage() {
             </div>
           </div>
 
-          <div className="grid gap-4">
-            <div className="panel p-6 md:p-8">
-              <p className="subtle-label">Demo password</p>
-              <p className="mt-4 text-sm text-ink/65">
-                Seeded accounts, migrated legacy accounts, and admin-created student accounts use:
-              </p>
-              <div className="mt-4">
-                <Badge tone="soft">{DEMO_ACCOUNT_PASSWORD}</Badge>
-              </div>
-              <p className="mt-4 text-sm text-ink/55">
-                No email or password is prefilled now. Enter credentials manually, or use any seeded email with the demo password above.
-              </p>
-            </div>
-
-            <div className="grid gap-4 md:grid-cols-2">
-              <StatCard label="Verified" value="Yes" detail="Transparent profiles always show verification." />
-              <StatCard label="Join flow" value="Code based" detail="Students enter a project code from admin." />
-              <StatCard label="Reports" value="New → Resolved" detail="Moderation actions are logged inside each report." />
-              <StatCard label="Workspace" value="Persistent" detail="Chat, tasks, and meeting slot survive refresh." />
-            </div>
+          <div className="grid content-start gap-4 md:grid-cols-2">
+            <StatCard label="Verified" value="Yes" detail="Transparent profiles always show verification." />
+            <StatCard label="Join flow" value="Code based" detail="Students enter a project code from admin." />
+            <StatCard label="Reports" value="New → Resolved" detail="Moderation actions are logged inside each report." />
+            <StatCard label="Workspace" value="Persistent" detail="Chat, tasks, and meeting slot survive refresh." />
           </div>
         </div>
       </div>

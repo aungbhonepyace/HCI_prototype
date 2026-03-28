@@ -46,6 +46,7 @@ import {
   sentenceCase,
   toggleInArray,
 } from "@/lib/utils";
+import { validatePasswordStrength } from "@/lib/storage";
 
 function getCurrentAiSession(userId: string | undefined, projectId: string | undefined, aiSessions: ReturnType<typeof useApp>["state"]["aiSessions"]) {
   return aiSessions.find((session) => session.userId === userId && session.projectId === projectId);
@@ -566,7 +567,7 @@ export function StudentJoinPage() {
 }
 
 export function StudentProfilePage() {
-  const { currentUser, updateCurrentUser } = useApp();
+  const { changeCurrentPassword, currentUser, updateCurrentUser } = useApp();
   const [name, setName] = useState(currentUser?.name || "");
   const [email, setEmail] = useState(currentUser?.email || "");
   const [bio, setBio] = useState(currentUser?.profile.bio || "");
@@ -585,6 +586,12 @@ export function StudentProfilePage() {
   const [notes, setNotes] = useState(currentUser?.profile.notes || "");
   const [volunteer, setVolunteer] = useState(Boolean(currentUser?.volunteer));
   const [saved, setSaved] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [nextPassword, setNextPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
+  const [passwordTone, setPasswordTone] = useState<"success" | "error">("error");
+  const passwordChecks = validatePasswordStrength(nextPassword);
 
   useEffect(() => {
     if (!currentUser) {
@@ -769,6 +776,83 @@ export function StudentProfilePage() {
               Volunteer status: {volunteer ? "ON" : "OFF"}
             </p>
             <p className="mt-2 text-sm text-ink/70">{notes || "No extra boundaries or notes added yet."}</p>
+          </div>
+          <div className="panel-muted p-5">
+            <p className="subtle-label">Password</p>
+            <div className="mt-4 grid gap-4">
+              <Field label="Current password">
+                <input
+                  type="password"
+                  className="input"
+                  value={currentPassword}
+                  onChange={(event) => {
+                    setCurrentPassword(event.target.value);
+                    setPasswordMessage(null);
+                  }}
+                />
+              </Field>
+              <Field label="New password">
+                <input
+                  type="password"
+                  className="input"
+                  value={nextPassword}
+                  onChange={(event) => {
+                    setNextPassword(event.target.value);
+                    setPasswordMessage(null);
+                  }}
+                />
+              </Field>
+              <Field label="Confirm new password">
+                <input
+                  type="password"
+                  className="input"
+                  value={confirmPassword}
+                  onChange={(event) => {
+                    setConfirmPassword(event.target.value);
+                    setPasswordMessage(null);
+                  }}
+                />
+              </Field>
+            </div>
+
+            <div className="mt-4 rounded-[20px] border border-ink/10 bg-white px-4 py-4">
+              <p className="text-sm font-semibold text-ink">Password policy</p>
+              <div className="mt-3 grid gap-2 text-sm text-ink/65">
+                <p>{passwordChecks.minLength ? "Passed" : "Needed"}: at least 8 characters</p>
+                <p>{passwordChecks.uppercase ? "Passed" : "Needed"}: one uppercase letter</p>
+                <p>{passwordChecks.lowercase ? "Passed" : "Needed"}: one lowercase letter</p>
+                <p>{passwordChecks.digit ? "Passed" : "Needed"}: one number</p>
+                <p>{confirmPassword && confirmPassword === nextPassword ? "Passed" : "Needed"}: confirmation matches</p>
+              </div>
+            </div>
+
+            <button
+              className="btn-secondary mt-5"
+              onClick={() => {
+                if (nextPassword !== confirmPassword) {
+                  setPasswordMessage("New password and confirmation do not match.");
+                  setPasswordTone("error");
+                  return;
+                }
+
+                const result = changeCurrentPassword(currentPassword, nextPassword);
+                setPasswordMessage(result.message);
+                setPasswordTone(result.ok ? "success" : "error");
+                if (result.ok) {
+                  setCurrentPassword("");
+                  setNextPassword("");
+                  setConfirmPassword("");
+                }
+              }}
+            >
+              Update password
+            </button>
+
+            {passwordMessage ? (
+              <p className={cn("mt-4 text-sm", passwordTone === "success" ? "text-tide" : "text-coral")}>
+                {passwordMessage}
+              </p>
+            ) : null}
           </div>
         </section>
       </div>

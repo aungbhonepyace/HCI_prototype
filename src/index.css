@@ -53,15 +53,16 @@ body {
   }
 
   .subtle-label {
-    @apply block text-xs font-semibold uppercase leading-none tracking-[0.24em] text-ink/50;
+    @apply block max-w-full whitespace-normal text-[0.72rem] font-semibold uppercase leading-[1.08] tracking-[0.16em] text-ink/50;
+    text-wrap: balance;
   }
 
   .btn-primary {
-    @apply inline-flex min-h-[48px] max-w-full items-center justify-center rounded-full bg-ink px-5 py-3 text-center text-sm font-semibold leading-tight text-white transition hover:-translate-y-0.5 hover:bg-tide disabled:cursor-not-allowed disabled:opacity-40;
+    @apply inline-flex min-h-[48px] max-w-full items-center justify-center rounded-full bg-ink px-5 py-3 text-center text-sm font-semibold leading-[1.15] text-white transition hover:-translate-y-0.5 hover:bg-tide disabled:cursor-not-allowed disabled:opacity-40;
   }
 
   .btn-secondary {
-    @apply inline-flex min-h-[48px] max-w-full items-center justify-center rounded-full border border-ink/10 bg-white px-5 py-3 text-center text-sm font-semibold leading-tight text-ink transition hover:-translate-y-0.5 hover:border-tide hover:text-tide;
+    @apply inline-flex min-h-[48px] max-w-full items-center justify-center rounded-full border border-ink/10 bg-white px-5 py-3 text-center text-sm font-semibold leading-[1.15] text-ink transition hover:-translate-y-0.5 hover:border-tide hover:text-tide;
   }
 
   .input {

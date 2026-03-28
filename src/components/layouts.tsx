@@ -22,10 +22,19 @@ const STUDENT_BOTTOM_LINKS = [
 ];
 
 const ADMIN_LINKS = [
-  { to: "/admin", label: "Dashboard" },
+  { to: "/admin", label: "Dashboard", end: true },
+  { to: "/admin/account", label: "Account" },
   { to: "/admin/classes", label: "Classes" },
   { to: "/admin/students", label: "Students" },
   { to: "/admin/reports", label: "Reports" },
+];
+
+const ADMIN_BOTTOM_LINKS = [
+  { to: "/admin", label: "Dashboard", end: true },
+  { to: "/admin/classes", label: "Classes" },
+  { to: "/admin/students", label: "Students" },
+  { to: "/admin/reports", label: "Reports" },
+  { to: "/admin/account", label: "Account" },
 ];
 
 export function RequireRole({ role }: { role: "student" | "admin" }) {
@@ -55,8 +64,8 @@ function ShellFrame({
   footerLinks,
   roleLabel,
 }: {
-  sidebarLinks: { to: string; label: string }[];
-  footerLinks?: { to: string; label: string }[];
+  sidebarLinks: { to: string; label: string; end?: boolean }[];
+  footerLinks?: { to: string; label: string; end?: boolean }[];
   roleLabel: string;
 }) {
   const { currentUser, currentProject, logout, state, studentProjects } = useApp();
@@ -80,7 +89,7 @@ function ShellFrame({
             </div>
             <nav className="mt-8 grid gap-2">
               {sidebarLinks.map((item) => (
-                <NavItem key={item.to} to={item.to} label={item.label} />
+                <NavItem key={item.to} to={item.to} label={item.label} end={item.end} />
               ))}
             </nav>
             <div className="mt-auto pt-6">
@@ -131,9 +140,12 @@ function ShellFrame({
 
       {footerLinks ? (
         <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-ink/10 bg-white/90 px-3 py-3 backdrop-blur lg:hidden">
-          <div className="mx-auto grid max-w-xl grid-cols-4 gap-2">
+          <div
+            className="mx-auto grid max-w-xl gap-2"
+            style={{ gridTemplateColumns: `repeat(${footerLinks.length}, minmax(0, 1fr))` }}
+          >
             {footerLinks.map((item) => (
-              <NavItem key={item.to} to={item.to} label={item.label} compact />
+              <NavItem key={item.to} to={item.to} label={item.label} compact end={item.end} />
             ))}
           </div>
         </nav>
@@ -153,7 +165,13 @@ export function StudentShell() {
 }
 
 export function AdminShell() {
-  return <ShellFrame sidebarLinks={ADMIN_LINKS} roleLabel="Instructor / TA Console" />;
+  return (
+    <ShellFrame
+      sidebarLinks={ADMIN_LINKS}
+      footerLinks={ADMIN_BOTTOM_LINKS}
+      roleLabel="Instructor / TA Console"
+    />
+  );
 }
 
 export function AccessBanner({

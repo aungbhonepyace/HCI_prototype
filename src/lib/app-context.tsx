@@ -68,6 +68,10 @@ interface AppContextValue {
     role: AuthState["role"],
   ) => { ok: boolean; message: string };
   logout: () => void;
+  changeCurrentPassword: (
+    currentPassword: string,
+    nextPassword: string,
+  ) => { ok: boolean; message: string };
   updateCurrentUser: (payload: Partial<User> & { profile?: Partial<UserProfile> }) => void;
   joinProject: (joinCode: string) => { ok: boolean; message: string };
   createClass: (payload: { name: string; term: string }) => void;
@@ -86,6 +90,11 @@ interface AppContextValue {
     email: string;
     verified: boolean;
     profile: Partial<UserProfile>;
+  }) => { ok: boolean; message: string; userId?: string };
+  adminCreateAdmin: (payload: {
+    name: string;
+    email: string;
+    password: string;
   }) => { ok: boolean; message: string; userId?: string };
   adminUpdateStudent: (
     userId: string,
@@ -1915,6 +1924,44 @@ export function AppProvider({ children }: { children: ReactNode }) {
       writeActiveProjectId(undefined);
       commit((previous) => ({ ...previous, auth: null }));
     },
+    changeCurrentPassword(currentPassword, nextPassword) {
+      if (!currentUser) {
+        return { ok: false, message: "Login first." };
+      }
+
+      const currentValue = currentPassword.trim();
+      const nextValue = nextPassword.trim();
+
+      if (!currentValue) {
+        return { ok: false, message: "Enter your current password." };
+      }
+      if (hashPassword(currentValue) !== currentUser.passwordHash) {
+        return { ok: false, message: "Current password is incorrect." };
+      }
+      if (!nextValue) {
+        return { ok: false, message: "Enter a new password." };
+      }
+      if (!isPasswordStrong(nextValue)) {
+        return {
+          ok: false,
+          message: "Use at least 8 characters with uppercase, lowercase, and a number.",
+        };
+      }
+      if (hashPassword(nextValue) === currentUser.passwordHash) {
+        return { ok: false, message: "Choose a different password from the current one." };
+      }
+
+      commit((previous) => ({
+        ...previous,
+        users: previous.users.map((user) =>
+          user.id === currentUser.id
+            ? { ...user, passwordHash: hashPassword(nextValue) }
+            : user,
+        ),
+      }));
+
+      return { ok: true, message: "Password updated." };
+    },
     updateCurrentUser(payload) {
       if (!currentUser) {
         return;
@@ -2196,6 +2243,52 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return {
         ok: true,
         message: `Student created. Temporary password: ${DEMO_ACCOUNT_PASSWORD}`,
+        userId: nextUser.id,
+      };
+    },
+    adminCreateAdmin(payload) {
+      if (!currentUser || currentUser.role !== "admin") {
+        return { ok: false, message: "Only admins can create admin accounts." };
+      }
+
+      const normalizedEmail = payload.email.trim().toLowerCase();
+      const password = payload.password.trim();
+
+      if (!normalizedEmail) {
+        return { ok: false, message: "Email is required." };
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+        return { ok: false, message: "Enter a valid email address." };
+      }
+      if (!isPasswordStrong(password)) {
+        return {
+          ok: false,
+          message: "Use at least 8 characters with uppercase, lowercase, and a number.",
+        };
+      }
+
+      const duplicate = stateRef.current.users.find(
+        (user) => user.email.toLowerCase() === normalizedEmail,
+      );
+      if (duplicate) {
+        return { ok: false, message: "That email is already in use." };
+      }
+
+      const baseUser = buildNewUser(normalizedEmail, "admin", password);
+      const nextUser: User = {
+        ...baseUser,
+        name: payload.name.trim() || baseUser.name,
+        verified: true,
+      };
+
+      commit((previous) => ({
+        ...previous,
+        users: [nextUser, ...previous.users],
+      }));
+
+      return {
+        ok: true,
+        message: "Admin account created.",
         userId: nextUser.id,
       };
     },

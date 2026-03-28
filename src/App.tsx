@@ -2,6 +2,7 @@ import { Link, Route, Routes } from "react-router-dom";
 import { AdminShell, AuthRedirect, RequireRole, StudentShell } from "@/components/layouts";
 import { AppProvider } from "@/lib/app-context";
 import {
+  AdminAccountPage,
   AdminClassProjectsPage,
   AdminClassesPage,
   AdminDashboardPage,
@@ -82,6 +83,7 @@ export function App() {
         <Route element={<RequireRole role="admin" />}>
           <Route element={<AdminShell />}>
             <Route path="/admin" element={<AdminDashboardPage />} />
+            <Route path="/admin/account" element={<AdminAccountPage />} />
             <Route path="/admin/classes" element={<AdminClassesPage />} />
             <Route path="/admin/classes/:id/projects" element={<AdminClassProjectsPage />} />
             <Route path="/admin/notifications" element={<AdminNotificationsPage />} />

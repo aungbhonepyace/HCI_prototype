@@ -54,7 +54,7 @@ export function Badge({
   return (
     <span
       className={cn(
-        "inline-flex min-h-[2.25rem] max-w-full items-center justify-center rounded-full px-3 py-1.5 text-center text-xs font-semibold leading-tight align-middle",
+        "inline-flex min-h-[2.5rem] max-w-full items-center justify-center rounded-full px-4 py-2 text-center text-sm font-semibold leading-[1.1] align-middle",
         "whitespace-normal break-words",
         toneClass,
       )}
@@ -118,10 +118,14 @@ export function StatCard({
   detail: string;
 }) {
   return (
-    <div className="panel-muted p-5">
-      <p className="subtle-label">{label}</p>
-      <p className="mt-3 break-words font-heading text-2xl font-semibold leading-tight text-ink md:text-3xl">{value}</p>
-      <p className="mt-2 text-sm text-ink/65">{detail}</p>
+    <div className="panel-muted flex min-h-[152px] flex-col justify-between p-5">
+      <div className="min-w-0">
+        <p className="subtle-label">{label}</p>
+        <p className="mt-3 break-words font-heading text-2xl font-semibold leading-[1.05] text-ink md:text-3xl">
+          {value}
+        </p>
+      </div>
+      <p className="mt-4 text-sm leading-6 text-ink/65">{detail}</p>
     </div>
   );
 }
@@ -158,7 +162,7 @@ export function OptionChip({
       type="button"
       onClick={onClick}
       className={cn(
-        "inline-flex min-h-[44px] max-w-full items-center justify-center rounded-full border px-4 py-2 text-center text-sm font-semibold leading-tight transition",
+        "inline-flex min-h-[44px] max-w-full items-center justify-center rounded-full border px-4 py-2 text-center text-sm font-semibold leading-[1.15] transition",
         selected
           ? "border-ink bg-ink text-white"
           : "border-ink/10 bg-white text-ink hover:border-tide hover:text-tide",
@@ -202,7 +206,7 @@ export function RolePill({ role }: { role: ProjectRole }) {
   return (
     <span
       className={cn(
-        "inline-flex min-h-[2.25rem] max-w-full items-center justify-center rounded-full px-3 py-1.5 text-center text-xs font-semibold leading-tight",
+        "inline-flex min-h-[2.5rem] max-w-full items-center justify-center rounded-full px-4 py-2 text-center text-sm font-semibold leading-[1.1]",
         "whitespace-normal break-words align-middle",
         tone,
       )}
@@ -216,17 +220,20 @@ export function NavItem({
   to,
   label,
   compact,
+  end,
 }: {
   to: string;
   label: string;
   compact?: boolean;
+  end?: boolean;
 }) {
   return (
     <NavLink
       to={to}
+      end={end}
       className={({ isActive }) =>
         cn(
-          "inline-flex min-h-[44px] items-center justify-center rounded-2xl px-4 py-3 text-sm font-semibold leading-tight transition",
+          "inline-flex min-h-[44px] items-center justify-center rounded-2xl px-4 py-3 text-sm font-semibold leading-[1.15] transition",
           compact ? "px-2 py-2 text-center text-[11px] leading-tight" : "",
           compact ? "whitespace-normal" : "",
           isActive

@@ -68,7 +68,7 @@ export function LandingPage() {
             },
             {
               title: "Team workspace",
-              body: "Accepted teams get a shared roster, local chat, starter tasks, meeting slot, and in-context reporting controls.",
+              body: "Accepted teams get a shared roster, local chat, editable to-do lists, meeting voting, and in-context reporting controls.",
             },
             {
               title: "Instructor oversight",

@@ -45,6 +45,7 @@ import type {
   QueueConstraints,
   QueueSession,
   ReportFormInput,
+  TeamTask,
   TeamRecord,
   TeamProposal,
   User,
@@ -127,6 +128,9 @@ interface AppContextValue {
   acceptQueueMatch: () => string | undefined;
   sendTeamMessage: (content: string) => { ok: boolean; message?: string };
   toggleTask: (taskId: string) => void;
+  addTeamTask: (title: string) => { ok: boolean; message: string };
+  updateTeamTask: (taskId: string, title: string) => { ok: boolean; message: string };
+  removeTeamTask: (taskId: string) => { ok: boolean; message: string };
   addMeetingOption: (startsAt: string) => { ok: boolean; message: string };
   voteMeetingOption: (optionId: string) => void;
   submitReport: (payload: ReportFormInput) => { ok: boolean; message: string };
@@ -167,6 +171,11 @@ declare global {
         message: string;
         queue?: QueueSession;
       };
+      meetingVoteAllYes: (
+        teamId?: string,
+        optionId?: string,
+      ) => { ok: boolean; message: string; optionId?: string };
+      meetingVoteAllNo: (teamId?: string) => { ok: boolean; message: string };
       finalizeOverflow: (
         projectId?: string,
       ) => { ok: boolean; message: string; overflow?: OverflowState };
@@ -228,6 +237,25 @@ function pushNotification(
       },
       ...state.notifications,
     ],
+  };
+}
+
+function updateTeamTaskBucket(
+  state: AppState,
+  teamId: string,
+  updater: (tasks: TeamTask[]) => TeamTask[],
+): AppState {
+  const existingBucket = state.teamTasks.find((bucket) => bucket.teamId === teamId);
+  const nextBucket = {
+    teamId,
+    tasks: updater(existingBucket?.tasks || []),
+  };
+
+  return {
+    ...state,
+    teamTasks: existingBucket
+      ? state.teamTasks.map((bucket) => (bucket.teamId === teamId ? nextBucket : bucket))
+      : [nextBucket, ...state.teamTasks],
   };
 }
 
@@ -1257,6 +1285,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return { ok: true as const, proposal };
     };
 
+    const resolveDebugTeam = (
+      liveState: AppState,
+      user: User | undefined,
+      teamId?: string,
+    ) => {
+      const team =
+        (teamId
+          ? liveState.teams.find((entry) => entry.id === teamId)
+          : user?.role === "student"
+            ? (() => {
+                const project = resolveCurrentProject(liveState, user.id, activeProjectId);
+                return project ? resolveCurrentTeam(liveState, user.id, project.id) : undefined;
+              })()
+            : liveState.teams[0]) || undefined;
+
+      if (!team) {
+        return { ok: false as const, message: "No team could be resolved for this debug command." };
+      }
+
+      return { ok: true as const, team };
+    };
+
     window.gfDebug = {
       help: () => ({
         demoAccounts: "List all seeded student/admin emails and the shared demo password.",
@@ -1270,6 +1320,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           "Simulate one pending member declining a proposal so refill behavior can be demonstrated.",
         forceQueueMatch: "Resolve the current student's Lucky Draw queue session immediately.",
         inspectQueue: "Inspect the current student's queue session for the selected project.",
+        meetingVoteAllYes:
+          "Force every member on the resolved team to vote for the leading or selected meeting option.",
+        meetingVoteAllNo:
+          "Clear all votes from the resolved team's meeting options to simulate a full rejection.",
         finalizeOverflow:
           "Force overflow placement/finalization immediately for the resolved project.",
         setVolunteer:
@@ -1707,6 +1761,91 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ? `Queue session found for ${project.name}.`
             : `No queue session exists yet for ${project.name}.`,
           queue,
+        };
+      },
+      meetingVoteAllYes: (teamId, optionId) => {
+        const liveState = stateRef.current;
+        const resolvedUser = resolveDebugUser(liveState);
+        const resolvedTeam = resolveDebugTeam(
+          liveState,
+          resolvedUser.ok ? resolvedUser.user : undefined,
+          teamId,
+        );
+        if (!resolvedTeam.ok) {
+          return resolvedTeam;
+        }
+
+        const team = resolvedTeam.team;
+        const targetOption =
+          (optionId
+            ? team.meetingOptions.find((option) => option.id === optionId)
+            : [...(team.meetingOptions || [])].sort(
+                (left, right) =>
+                  right.voterIds.length - left.voterIds.length ||
+                  left.startsAt.localeCompare(right.startsAt),
+              )[0]) || undefined;
+
+        if (!targetOption) {
+          return { ok: false, message: "Add a meeting option first." };
+        }
+
+        const allMemberIds = [...team.memberIds];
+        commit((previous) => ({
+          ...previous,
+          teams: previous.teams.map((entry) =>
+            entry.id === team.id
+              ? {
+                  ...entry,
+                  meetingOptions: (entry.meetingOptions || []).map((option) => ({
+                    ...option,
+                    voterIds: option.id === targetOption.id ? allMemberIds : [],
+                  })),
+                }
+              : entry,
+          ),
+        }));
+
+        return {
+          ok: true,
+          message: `All ${allMemberIds.length} team members voted for ${targetOption.startsAt}.`,
+          optionId: targetOption.id,
+        };
+      },
+      meetingVoteAllNo: (teamId) => {
+        const liveState = stateRef.current;
+        const resolvedUser = resolveDebugUser(liveState);
+        const resolvedTeam = resolveDebugTeam(
+          liveState,
+          resolvedUser.ok ? resolvedUser.user : undefined,
+          teamId,
+        );
+        if (!resolvedTeam.ok) {
+          return resolvedTeam;
+        }
+
+        const team = resolvedTeam.team;
+        if (!team.meetingOptions.length) {
+          return { ok: false, message: "Add a meeting option first." };
+        }
+
+        commit((previous) => ({
+          ...previous,
+          teams: previous.teams.map((entry) =>
+            entry.id === team.id
+              ? {
+                  ...entry,
+                  meetingOptions: (entry.meetingOptions || []).map((option) => ({
+                    ...option,
+                    voterIds: [],
+                  })),
+                }
+              : entry,
+          ),
+        }));
+
+        return {
+          ok: true,
+          message: `Cleared all meeting votes for ${team.id}.`,
         };
       },
       finalizeOverflow: (projectId) => {
@@ -3077,21 +3216,79 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      commit((previous) => ({
-        ...previous,
-        teamTasks: previous.teamTasks.map((bucket) =>
-          bucket.teamId === currentTeam.id
-            ? {
-                ...bucket,
-                tasks: bucket.tasks.map((task) =>
-                  task.id === taskId
-                    ? { ...task, status: task.status === "done" ? "todo" : "done" }
-                    : task,
-                ),
-              }
-            : bucket,
+      commit((previous) =>
+        updateTeamTaskBucket(previous, currentTeam.id, (tasks) =>
+          tasks.map((task) =>
+            task.id === taskId
+              ? { ...task, status: task.status === "done" ? "todo" : "done" }
+              : task,
+          ),
         ),
-      }));
+      );
+    },
+    addTeamTask(title) {
+      if (!currentTeam) {
+        return { ok: false, message: "Open a team first." };
+      }
+
+      const value = title.trim();
+      if (!value) {
+        return { ok: false, message: "Enter a to-do item first." };
+      }
+
+      commit((previous) =>
+        updateTeamTaskBucket(previous, currentTeam.id, (tasks) => [
+          ...tasks,
+          {
+            id: createId("task"),
+            title: value,
+            status: "todo",
+          },
+        ]),
+      );
+
+      return { ok: true, message: "To-do item added." };
+    },
+    updateTeamTask(taskId, title) {
+      if (!currentTeam) {
+        return { ok: false, message: "Open a team first." };
+      }
+
+      const value = title.trim();
+      if (!value) {
+        return { ok: false, message: "Task title cannot be empty." };
+      }
+
+      const bucket = stateRef.current.teamTasks.find((entry) => entry.teamId === currentTeam.id);
+      if (!bucket?.tasks.some((task) => task.id === taskId)) {
+        return { ok: false, message: "That to-do item could not be found." };
+      }
+
+      commit((previous) =>
+        updateTeamTaskBucket(previous, currentTeam.id, (tasks) =>
+          tasks.map((task) => (task.id === taskId ? { ...task, title: value } : task)),
+        ),
+      );
+
+      return { ok: true, message: "To-do item updated." };
+    },
+    removeTeamTask(taskId) {
+      if (!currentTeam) {
+        return { ok: false, message: "Open a team first." };
+      }
+
+      const bucket = stateRef.current.teamTasks.find((entry) => entry.teamId === currentTeam.id);
+      if (!bucket?.tasks.some((task) => task.id === taskId)) {
+        return { ok: false, message: "That to-do item could not be found." };
+      }
+
+      commit((previous) =>
+        updateTeamTaskBucket(previous, currentTeam.id, (tasks) =>
+          tasks.filter((task) => task.id !== taskId),
+        ),
+      );
+
+      return { ok: true, message: "To-do item removed." };
     },
     addMeetingOption(startsAt) {
       if (!currentUser || !currentTeam) {

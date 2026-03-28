@@ -2125,20 +2125,30 @@ export function QueueMatchPage() {
 
 export function TeamWorkspacePage() {
   const {
+    addTeamTask,
     addMeetingOption,
     activeProjectId,
     currentProject,
     currentTeam,
     currentUser,
+    removeTeamTask,
     sendTeamMessage,
     setActiveProject,
     state,
     studentProjects,
     studentTeams,
     toggleTask,
+    updateTeamTask,
     voteMeetingOption,
   } = useApp();
   const [message, setMessage] = useState("");
+  const [taskDraft, setTaskDraft] = useState("");
+  const [taskFeedback, setTaskFeedback] = useState<{
+    tone: "success" | "error";
+    message: string;
+  } | null>(null);
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [editingTaskTitle, setEditingTaskTitle] = useState("");
   const [meetingDraft, setMeetingDraft] = useState("");
   const [meetingFeedback, setMeetingFeedback] = useState<{
     tone: "success" | "error";
@@ -2150,6 +2160,15 @@ export function TeamWorkspacePage() {
     currentProject?.teamSize,
     currentProject?.deadline,
   );
+
+  useEffect(() => {
+    setTaskDraft("");
+    setTaskFeedback(null);
+    setEditingTaskId(null);
+    setEditingTaskTitle("");
+    setMeetingDraft("");
+    setMeetingFeedback(null);
+  }, [currentTeam?.id]);
 
   if (!currentUser) {
     return null;
@@ -2202,6 +2221,7 @@ export function TeamWorkspacePage() {
   const teamMembers = state.users.filter((user) => currentTeam.memberIds.includes(user.id));
   const chatBucket = state.teamChat.find((bucket) => bucket.teamId === currentTeam.id);
   const taskBucket = state.teamTasks.find((bucket) => bucket.teamId === currentTeam.id);
+  const tasks = taskBucket?.tasks || [];
   const meetingOptions = [...(currentTeam.meetingOptions || [])].sort(
     (left, right) =>
       right.voterIds.length - left.voterIds.length || left.startsAt.localeCompare(right.startsAt),
@@ -2351,23 +2371,152 @@ export function TeamWorkspacePage() {
 
         <section className="space-y-4">
           <article className="panel p-5 md:p-6">
-            <p className="subtle-label">Starter tasks</p>
+            <p className="subtle-label">To-do list</p>
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+              <input
+                className="input flex-1"
+                value={taskDraft}
+                onChange={(event) => {
+                  setTaskDraft(event.target.value);
+                  setTaskFeedback(null);
+                }}
+                placeholder="Add a team to-do item"
+              />
+              <button
+                className="btn-primary"
+                onClick={() => {
+                  const result = addTeamTask(taskDraft);
+                  setTaskFeedback({
+                    tone: result.ok ? "success" : "error",
+                    message: result.message,
+                  });
+                  if (result.ok) {
+                    setTaskDraft("");
+                  }
+                }}
+              >
+                Add item
+              </button>
+            </div>
+            {taskFeedback ? (
+              <p
+                className={cn(
+                  "mt-3 text-sm",
+                  taskFeedback.tone === "success" ? "text-mint" : "text-coral",
+                )}
+              >
+                {taskFeedback.message}
+              </p>
+            ) : null}
             <div className="mt-4 space-y-3">
-              {taskBucket?.tasks.map((task) => (
-                <button
-                  key={task.id}
-                  type="button"
-                  onClick={() => toggleTask(task.id)}
-                  className="flex w-full items-center justify-between rounded-[20px] border border-ink/10 px-4 py-3 text-left text-sm"
-                >
-                  <span className={task.status === "done" ? "line-through text-ink/45" : "text-ink/70"}>
-                    {task.title}
-                  </span>
-                  <Badge tone={task.status === "done" ? "success" : "soft"}>
-                    {task.status === "done" ? "Done" : "Todo"}
-                  </Badge>
-                </button>
-              ))}
+              {tasks.length ? (
+                tasks.map((task) => {
+                  const isEditing = editingTaskId === task.id;
+
+                  return (
+                    <div
+                      key={task.id}
+                      className="rounded-[20px] border border-ink/10 px-4 py-4"
+                    >
+                      <div className="flex flex-col gap-4">
+                        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                          <div className="min-w-0 flex-1">
+                            {isEditing ? (
+                              <input
+                                className="input"
+                                value={editingTaskTitle}
+                                onChange={(event) => {
+                                  setEditingTaskTitle(event.target.value);
+                                  setTaskFeedback(null);
+                                }}
+                              />
+                            ) : (
+                              <p className={task.status === "done" ? "text-ink/45 line-through" : "text-ink/75"}>
+                                {task.title}
+                              </p>
+                            )}
+                          </div>
+                          <Badge tone={task.status === "done" ? "success" : "soft"}>
+                            {task.status === "done" ? "Done" : "Todo"}
+                          </Badge>
+                        </div>
+
+                        <div className="flex flex-wrap gap-3">
+                          <button
+                            className={task.status === "done" ? "btn-secondary" : "btn-primary"}
+                            onClick={() => toggleTask(task.id)}
+                          >
+                            {task.status === "done" ? "Mark todo" : "Mark done"}
+                          </button>
+
+                          {isEditing ? (
+                            <>
+                              <button
+                                className="btn-primary"
+                                onClick={() => {
+                                  const result = updateTeamTask(task.id, editingTaskTitle);
+                                  setTaskFeedback({
+                                    tone: result.ok ? "success" : "error",
+                                    message: result.message,
+                                  });
+                                  if (result.ok) {
+                                    setEditingTaskId(null);
+                                    setEditingTaskTitle("");
+                                  }
+                                }}
+                              >
+                                Save
+                              </button>
+                              <button
+                                className="btn-secondary"
+                                onClick={() => {
+                                  setEditingTaskId(null);
+                                  setEditingTaskTitle("");
+                                  setTaskFeedback(null);
+                                }}
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              className="btn-secondary"
+                              onClick={() => {
+                                setEditingTaskId(task.id);
+                                setEditingTaskTitle(task.title);
+                                setTaskFeedback(null);
+                              }}
+                            >
+                              Edit
+                            </button>
+                          )}
+
+                          <button
+                            className="btn-secondary"
+                            onClick={() => {
+                              const result = removeTeamTask(task.id);
+                              setTaskFeedback({
+                                tone: result.ok ? "success" : "error",
+                                message: result.message,
+                              });
+                              if (result.ok && editingTaskId === task.id) {
+                                setEditingTaskId(null);
+                                setEditingTaskTitle("");
+                              }
+                            }}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <p className="text-sm text-ink/50">
+                  No to-do items yet. Add the first one for this team.
+                </p>
+              )}
             </div>
           </article>
 

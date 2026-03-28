@@ -100,6 +100,16 @@ window.gfDebug.forceQueueMatch("project_mobility")
 - Inspects the current Lucky Draw queue session or forces it to resolve immediately.
 
 ```js
+window.gfDebug.meetingVoteAllYes()
+window.gfDebug.meetingVoteAllYes("team_xxx")
+window.gfDebug.meetingVoteAllYes("team_xxx", "meeting_xxx")
+window.gfDebug.meetingVoteAllNo()
+window.gfDebug.meetingVoteAllNo("team_xxx")
+```
+
+- Forces all team members to support one meeting option, or clears all meeting votes to simulate a full rejection.
+
+```js
 window.gfDebug.setVolunteer(true)
 window.gfDebug.setVolunteer(false)
 ```
@@ -127,7 +137,7 @@ window.gfDebug.resetDemoData()
 - Transparent profiles with verified badges
 - Mutual-confirmation AI proposals with expiry, hold-and-refill behavior, and proposal notifications
 - Flex volunteer overflow handling for uneven class sizes, with deadline finalization
-- Local chat, starter tasks, meeting voting, and moderation actions that persist after refresh
+- Local chat, editable to-do lists, meeting voting, and moderation actions that persist after refresh
 
 ## Architecture note
 
@@ -153,7 +163,7 @@ The app seeds demo data on first load and writes each collection to a dedicated 
 - `gf_team_proposals`: AI proposal records, member statuses, locked accepted members, and refill state
 - `gf_teams`: confirmed team rosters, roles, creation mode/source, meeting vote options, and overflow metadata
 - `gf_team_chat`: team chat buckets
-- `gf_team_tasks`: starter task buckets
+- `gf_team_tasks`: per-team to-do list buckets
 - `gf_notifications`: per-user notifications with typed proposal and team events
 - `gf_reports`: submitted reports, context, status, and audit log
 
@@ -189,7 +199,7 @@ Overflow policy:
 - On app load and every minute, the frontend checks `formationDeadline`
 - If the deadline has passed and `forceOverflowAtDeadline` is enabled, remaining unmatched students can be force-placed into the remaining allowed overflow slots and notified
 
-Lucky Draw still creates a team immediately. Confirmed AI proposals create the final team, starter tasks, a seeded system chat message, notifications, and a persistent workspace. Overflow placements happen only after those teams are confirmed.
+Lucky Draw still creates a team immediately. Confirmed AI proposals create the final team, a seeded to-do list, a seeded system chat message, notifications, and a persistent workspace. Overflow placements happen only after those teams are confirmed.
 
 ## Project structure
 

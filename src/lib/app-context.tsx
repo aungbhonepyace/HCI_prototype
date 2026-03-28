@@ -132,6 +132,7 @@ interface AppContextValue {
   submitReport: (payload: ReportFormInput) => { ok: boolean; message: string };
   markNotificationRead: (notificationId: string) => void;
   markAllNotificationsRead: () => void;
+  removeNotification: (notificationId: string) => void;
   adminActOnReport: (
     reportId: string,
     action: "warn" | "mute" | "restrict matching" | "remove from project",
@@ -3255,6 +3256,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
         ...previous,
         notifications: previous.notifications.map((notification) =>
           notification.userId === currentUser.id ? { ...notification, read: true } : notification,
+        ),
+      }));
+    },
+    removeNotification(notificationId) {
+      if (!currentUser) {
+        return;
+      }
+
+      commit((previous) => ({
+        ...previous,
+        notifications: previous.notifications.filter(
+          (notification) =>
+            !(notification.id === notificationId && notification.userId === currentUser.id),
         ),
       }));
     },

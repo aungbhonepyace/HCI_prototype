@@ -2514,7 +2514,7 @@ export function TeamWorkspacePage() {
 }
 
 export function NotificationsPage() {
-  const { currentUser, markAllNotificationsRead, markNotificationRead, state } = useApp();
+  const { currentUser, markAllNotificationsRead, markNotificationRead, removeNotification, state } = useApp();
 
   if (!currentUser) {
     return null;
@@ -2566,6 +2566,9 @@ export function NotificationsPage() {
                       Mark read
                     </button>
                   ) : null}
+                  <button className="btn-secondary" onClick={() => removeNotification(notification.id)}>
+                    Remove
+                  </button>
                 </div>
               </div>
             </article>

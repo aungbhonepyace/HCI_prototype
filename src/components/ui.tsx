@@ -22,9 +22,11 @@ function getCustomRoleTone(role: string): string {
 export function LogoMark() {
   return (
     <Link to="/" className="inline-flex min-w-0 items-center gap-3">
-      <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-ink font-heading text-lg font-semibold text-white shadow-panel">
-        GF
-      </span>
+      <img
+        src="/groupfinder-logo.png"
+        alt="GroupFinder logo"
+        className="h-12 w-12 shrink-0 object-contain md:h-14 md:w-14"
+      />
       <span className="min-w-0">
         <span className="block text-lg font-heading font-semibold text-ink md:text-xl">GroupFinder</span>
         <span className="hidden text-xs uppercase tracking-[0.28em] text-ink/45 sm:block">

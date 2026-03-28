@@ -58,6 +58,227 @@ function getMatchingSnapshot(state: ReturnType<typeof useApp>["state"], userId: 
   return resolveMatchingProfile(state, userId);
 }
 
+function getProjectSettingSnapshot(
+  state: ReturnType<typeof useApp>["state"],
+  projectId: string,
+  teamSize: number,
+  deadline: string,
+) {
+  return (
+    state.projectSettings.find((setting) => setting.projectId === projectId) || {
+      projectId,
+      teamSize,
+      proposalExpiryMinutes: 30,
+      overflowTeamsAllowed: 0,
+      formationDeadline: deadline,
+      forceOverflowAtDeadline: true,
+    }
+  );
+}
+
+function getOverflowSnapshot(
+  state: ReturnType<typeof useApp>["state"],
+  projectId: string,
+  overflowTeamsAllowed: number,
+) {
+  return (
+    state.overflowState.find((entry) => entry.projectId === projectId) || {
+      projectId,
+      overflowTeamsAllowed,
+      overflowSlotsNeeded: overflowTeamsAllowed,
+      overflowSlotsFilled: 0,
+      overflowMemberIds: [],
+      forcedOverflowMemberIds: [],
+      deadlineFinalized: false,
+    }
+  );
+}
+
+function getProjectMetrics(
+  state: ReturnType<typeof useApp>["state"],
+  projectId: string,
+) {
+  const memberships = state.memberships.filter(
+    (membership) => membership.projectId === projectId && membership.status === "active",
+  );
+  const uniqueMemberIds = [...new Set(memberships.map((membership) => membership.userId))];
+  const unmatchedIds = [
+    ...new Set(
+      memberships
+        .filter((membership) => membership.matchingStatus !== "confirmed")
+        .map((membership) => membership.userId),
+    ),
+  ];
+
+  return {
+    enrollmentCount: uniqueMemberIds.length,
+    confirmedTeamCount: state.teams.filter((team) => team.projectId === projectId).length,
+    unmatchedCount: unmatchedIds.length,
+    volunteersAvailable: uniqueMemberIds.filter((userId) => {
+      const user = state.users.find((entry) => entry.id === userId);
+      return Boolean(user?.volunteer && !state.memberships.some(
+        (membership) =>
+          membership.userId === userId &&
+          membership.projectId === projectId &&
+          membership.matchingStatus === "confirmed",
+      ));
+    }).length,
+  };
+}
+
+function toDateTimeLocalValue(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+function ProjectPolicyCard({ project }: { project: ReturnType<typeof useApp>["state"]["projects"][number] }) {
+  const { regenerateJoinCode, state, updateProjectSettings } = useApp();
+  const setting = getProjectSettingSnapshot(state, project.id, project.teamSize, project.deadline);
+  const overflow = getOverflowSnapshot(state, project.id, setting.overflowTeamsAllowed);
+  const metrics = getProjectMetrics(state, project.id);
+  const [overflowTeamsAllowed, setOverflowTeamsAllowed] = useState(setting.overflowTeamsAllowed);
+  const [formationDeadline, setFormationDeadline] = useState(
+    toDateTimeLocalValue(setting.formationDeadline),
+  );
+  const [forceOverflowAtDeadline, setForceOverflowAtDeadline] = useState(
+    setting.forceOverflowAtDeadline,
+  );
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    setOverflowTeamsAllowed(setting.overflowTeamsAllowed);
+    setFormationDeadline(toDateTimeLocalValue(setting.formationDeadline));
+    setForceOverflowAtDeadline(setting.forceOverflowAtDeadline);
+  }, [setting.forceOverflowAtDeadline, setting.formationDeadline, setting.overflowTeamsAllowed]);
+
+  return (
+    <article className="panel p-6">
+      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+        <div className="min-w-0">
+          <p className="subtle-label">Join code</p>
+          <h2 className="mt-3 break-all font-heading text-2xl font-semibold text-ink md:text-3xl">
+            {project.joinCode}
+          </h2>
+          <p className="mt-3 text-sm text-ink/65">{project.name}</p>
+        </div>
+        <button className="btn-secondary self-start md:shrink-0" onClick={() => regenerateJoinCode(project.id)}>
+          Regenerate code
+        </button>
+      </div>
+
+      <div className="mt-5 flex flex-wrap gap-2">
+        {project.roleTemplates.map((role) => (
+          <RolePill key={role} role={role} />
+        ))}
+      </div>
+
+      <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="panel-muted p-4">
+          <p className="subtle-label">Students</p>
+          <p className="mt-2 text-2xl font-semibold text-ink">{metrics.enrollmentCount}</p>
+        </div>
+        <div className="panel-muted p-4">
+          <p className="subtle-label">Confirmed teams</p>
+          <p className="mt-2 text-2xl font-semibold text-ink">{metrics.confirmedTeamCount}</p>
+        </div>
+        <div className="panel-muted p-4">
+          <p className="subtle-label">Unmatched</p>
+          <p className="mt-2 text-2xl font-semibold text-ink">{metrics.unmatchedCount}</p>
+        </div>
+        <div className="panel-muted p-4">
+          <p className="subtle-label">Volunteers</p>
+          <p className="mt-2 text-2xl font-semibold text-ink">{metrics.volunteersAvailable}</p>
+        </div>
+        <div className="panel-muted p-4">
+          <p className="subtle-label">Overflow</p>
+          <p className="mt-2 text-2xl font-semibold text-ink">
+            {overflow.overflowSlotsFilled}/{setting.overflowTeamsAllowed}
+          </p>
+        </div>
+        <div className="panel-muted p-4">
+          <p className="subtle-label">Finalized</p>
+          <p className="mt-2 text-lg font-semibold text-ink">
+            {overflow.deadlineFinalized ? "Yes" : "Not yet"}
+          </p>
+        </div>
+      </div>
+
+      <p className="mt-4 text-sm text-ink/65">
+        Project deadline {formatDeadline(project.deadline)} • Formation deadline{" "}
+        {formatDeadline(setting.formationDeadline)} • Team size {project.teamSize}
+      </p>
+
+      <div className="mt-6 grid gap-4 md:grid-cols-2">
+        <Field label="Overflow teams allowed">
+          <input
+            type="number"
+            min={0}
+            className="input"
+            value={overflowTeamsAllowed}
+            onChange={(event) => setOverflowTeamsAllowed(Number(event.target.value) || 0)}
+          />
+        </Field>
+        <Field label="Formation deadline">
+          <input
+            type="datetime-local"
+            className="input"
+            value={formationDeadline}
+            onChange={(event) => setFormationDeadline(event.target.value)}
+          />
+        </Field>
+        <div className="md:col-span-2">
+          <label className="flex min-h-[68px] items-center justify-between rounded-[24px] border border-ink/10 px-5 py-4">
+            <div>
+              <p className="font-semibold text-ink">Force overflow at deadline</p>
+              <p className="mt-1 text-sm text-ink/55">
+                If volunteers are still missing, unmatched students are placed into the remaining allowed overflow slots.
+              </p>
+            </div>
+            <input
+              type="checkbox"
+              checked={forceOverflowAtDeadline}
+              onChange={(event) => setForceOverflowAtDeadline(event.target.checked)}
+              className="h-5 w-5 accent-ink"
+            />
+          </label>
+        </div>
+      </div>
+
+      <div className="mt-5 flex flex-wrap gap-3">
+        <button
+          className="btn-primary"
+          onClick={() => {
+            const result = updateProjectSettings({
+              projectId: project.id,
+              overflowTeamsAllowed,
+              formationDeadline,
+              forceOverflowAtDeadline,
+            });
+            setMessage(result.message);
+          }}
+        >
+          Save overflow policy
+        </button>
+        {overflow.forcedOverflowMemberIds.length ? (
+          <Badge tone="warn">{overflow.forcedOverflowMemberIds.length} forced placements</Badge>
+        ) : null}
+      </div>
+
+      {message ? <p className="mt-3 text-sm text-ink/65">{message}</p> : null}
+    </article>
+  );
+}
+
 export function AdminDashboardPage() {
   const { state } = useApp();
 
@@ -94,25 +315,59 @@ export function AdminDashboardPage() {
           <p className="subtle-label">Project overview</p>
           <div className="mt-4 space-y-4">
             {state.projects.map((project) => (
-              <article key={project.id} className="rounded-[24px] border border-ink/10 p-5">
-                <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                  <div className="min-w-0">
-                    <h2 className="font-heading text-2xl font-semibold text-ink">{project.name}</h2>
-                    <p className="mt-2 text-sm text-ink/65">{project.description}</p>
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      <Badge tone="soft">{project.joinCode}</Badge>
-                      <Badge tone="soft">Team size {project.teamSize}</Badge>
-                      <span className="text-xs text-ink/45">Deadline {formatDeadline(project.deadline)}</span>
+              (() => {
+                const setting = getProjectSettingSnapshot(state, project.id, project.teamSize, project.deadline);
+                const overflow = getOverflowSnapshot(state, project.id, setting.overflowTeamsAllowed);
+                const metrics = getProjectMetrics(state, project.id);
+
+                return (
+                  <article key={project.id} className="rounded-[24px] border border-ink/10 p-5">
+                    <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                      <div className="min-w-0">
+                        <h2 className="font-heading text-2xl font-semibold text-ink">{project.name}</h2>
+                        <p className="mt-2 text-sm text-ink/65">{project.description}</p>
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          <Badge tone="soft">{project.joinCode}</Badge>
+                          <Badge tone="soft">Team size {project.teamSize}</Badge>
+                          <Badge tone="soft">
+                            Overflow {overflow.overflowSlotsFilled}/{setting.overflowTeamsAllowed}
+                          </Badge>
+                          <span className="text-xs text-ink/45">
+                            Formation deadline {formatDeadline(setting.formationDeadline)}
+                          </span>
+                        </div>
+                      </div>
+                      <Link
+                        to={`/admin/classes/${project.classId}/projects`}
+                        className="btn-secondary self-start md:shrink-0"
+                      >
+                        Manage project
+                      </Link>
                     </div>
-                  </div>
-                  <Link
-                    to={`/admin/classes/${project.classId}/projects`}
-                    className="btn-secondary self-start md:shrink-0"
-                  >
-                    Manage project
-                  </Link>
-                </div>
-              </article>
+                    <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                      <div className="rounded-[20px] bg-sand/70 px-4 py-3">
+                        <p className="subtle-label">Students</p>
+                        <p className="mt-2 text-xl font-semibold text-ink">{metrics.enrollmentCount}</p>
+                      </div>
+                      <div className="rounded-[20px] bg-sand/70 px-4 py-3">
+                        <p className="subtle-label">Confirmed teams</p>
+                        <p className="mt-2 text-xl font-semibold text-ink">{metrics.confirmedTeamCount}</p>
+                      </div>
+                      <div className="rounded-[20px] bg-sand/70 px-4 py-3">
+                        <p className="subtle-label">Unmatched</p>
+                        <p className="mt-2 text-xl font-semibold text-ink">{metrics.unmatchedCount}</p>
+                      </div>
+                      <div className="rounded-[20px] bg-sand/70 px-4 py-3">
+                        <p className="subtle-label">Volunteers</p>
+                        <p className="mt-2 text-xl font-semibold text-ink">{metrics.volunteersAvailable}</p>
+                      </div>
+                    </div>
+                    <p className="mt-4 text-sm text-ink/55">
+                      Deadline finalized: {overflow.deadlineFinalized ? "Yes" : "No"} • Project deadline {formatDeadline(project.deadline)}
+                    </p>
+                  </article>
+                );
+              })()
             ))}
           </div>
         </section>
@@ -261,7 +516,7 @@ export function AdminClassesPage() {
 
 export function AdminClassProjectsPage() {
   const { id } = useParams();
-  const { createProject, regenerateJoinCode, state } = useApp();
+  const { createProject, state } = useApp();
   const classRecord = state.classes.find((entry) => entry.id === id);
   const classProjects = state.projects.filter((project) => project.classId === id);
   const [form, setForm] = useState(defaultProjectPayload());
@@ -322,6 +577,51 @@ export function AdminClassProjectsPage() {
               />
             </Field>
           </div>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <Field label="Overflow teams allowed">
+              <input
+                type="number"
+                min={0}
+                className="input"
+                value={form.overflowTeamsAllowed}
+                onChange={(event) =>
+                  setForm((previous) => ({
+                    ...previous,
+                    overflowTeamsAllowed: Number(event.target.value) || 0,
+                  }))
+                }
+              />
+            </Field>
+            <Field label="Formation deadline">
+              <input
+                type="datetime-local"
+                className="input"
+                value={form.formationDeadline}
+                onChange={(event) =>
+                  setForm((previous) => ({ ...previous, formationDeadline: event.target.value }))
+                }
+              />
+            </Field>
+          </div>
+          <label className="mt-4 flex min-h-[68px] items-center justify-between rounded-[24px] border border-ink/10 px-5 py-4">
+            <div>
+              <p className="font-semibold text-ink">Force overflow at deadline</p>
+              <p className="mt-1 text-sm text-ink/55">
+                Remaining unmatched students can be placed into the allowed overflow slots after the formation deadline.
+              </p>
+            </div>
+            <input
+              type="checkbox"
+              checked={form.forceOverflowAtDeadline}
+              onChange={(event) =>
+                setForm((previous) => ({
+                  ...previous,
+                  forceOverflowAtDeadline: event.target.checked,
+                }))
+              }
+              className="h-5 w-5 accent-ink"
+            />
+          </label>
           <Field label="Role templates">
             <div className="mt-4 flex flex-wrap gap-3">
               {ROLE_OPTIONS.map((role) => (
@@ -411,28 +711,7 @@ export function AdminClassProjectsPage() {
 
         <section className="grid gap-4">
           {classProjects.map((project) => (
-            <article key={project.id} className="panel p-6">
-              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                <div className="min-w-0">
-                  <p className="subtle-label">Join code</p>
-                  <h2 className="mt-3 break-all font-heading text-2xl font-semibold text-ink md:text-3xl">
-                    {project.joinCode}
-                  </h2>
-                  <p className="mt-3 text-sm text-ink/65">{project.name}</p>
-                </div>
-                <button className="btn-secondary self-start md:shrink-0" onClick={() => regenerateJoinCode(project.id)}>
-                  Regenerate code
-                </button>
-              </div>
-              <div className="mt-5 flex flex-wrap gap-2">
-                {project.roleTemplates.map((role) => (
-                  <RolePill key={role} role={role} />
-                ))}
-              </div>
-              <p className="mt-4 text-sm text-ink/65">
-                Deadline {formatDeadline(project.deadline)} • Team size {project.teamSize}
-              </p>
-            </article>
+            <ProjectPolicyCard key={project.id} project={project} />
           ))}
 
           {!classProjects.length ? (

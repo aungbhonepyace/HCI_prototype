@@ -36,6 +36,26 @@ export type TeamStatus = "forming" | "active" | "paused";
 
 export type MatchingMode = "ai" | "queue";
 
+export type NotificationType =
+  | "GENERAL"
+  | "PROPOSAL_INVITE"
+  | "PROPOSAL_ACCEPTED"
+  | "PROPOSAL_DECLINED"
+  | "PROPOSAL_REFILLING"
+  | "PROPOSAL_EXPIRED"
+  | "TEAM_CONFIRMED";
+
+export type ProposalMemberStatus = "pending" | "accepted" | "declined";
+
+export type TeamProposalStatus =
+  | "pending"
+  | "refilling"
+  | "confirmed"
+  | "expired"
+  | "cancelled";
+
+export type TeamCreatedFrom = "AI_MATCH" | "AI_PROPOSAL" | "QUEUE_MATCH";
+
 export interface AuthState {
   userId: string;
   role: AppRole;
@@ -78,6 +98,8 @@ export interface User {
   verified: boolean;
   profile: UserProfile;
   flags: UserFlags;
+  volunteer?: boolean;
+  volunteerEnabledAt?: string;
   createdAt: string;
 }
 
@@ -108,8 +130,10 @@ export interface Membership {
   classId: string;
   projectId?: string;
   status: "active" | "removed";
+  matchingStatus?: "unmatched" | "proposed" | "confirmed";
   joinedAt: string;
   teamId?: string;
+  confirmedTeamId?: string;
 }
 
 export interface AiAnswers {
@@ -160,6 +184,33 @@ export interface QueueSession {
   updatedAt: string;
 }
 
+export interface ProjectSetting {
+  projectId: string;
+  teamSize: number;
+  proposalExpiryMinutes: number;
+  overflowTeamsAllowed: number;
+  formationDeadline: string;
+  forceOverflowAtDeadline: boolean;
+}
+
+export interface OverflowState {
+  projectId: string;
+  overflowTeamsAllowed: number;
+  overflowSlotsNeeded: number;
+  overflowSlotsFilled: number;
+  overflowMemberIds: string[];
+  forcedOverflowMemberIds: string[];
+  deadlineFinalized: boolean;
+}
+
+export interface TeamMeetingOption {
+  id: string;
+  startsAt: string;
+  proposedBy: string;
+  voterIds: string[];
+  createdAt: string;
+}
+
 export interface TeamRecord {
   id: string;
   classId: string;
@@ -167,10 +218,33 @@ export interface TeamRecord {
   memberIds: string[];
   roles: Record<string, ProjectRole>;
   createdByMode: MatchingMode;
+  createdFrom: TeamCreatedFrom;
   status: TeamStatus;
   compatibilitySummary: string[];
   meetingTime?: string;
+  meetingOptions: TeamMeetingOption[];
+  maxSize: number;
+  isOverflowTeam: boolean;
+  overflowMemberId?: string;
   createdAt: string;
+}
+
+export interface TeamProposal {
+  id: string;
+  projectId: string;
+  createdByUserId: string;
+  createdAt: string;
+  expiresAt: string;
+  teamSize: number;
+  memberIds: string[];
+  memberStatuses: Record<string, ProposalMemberStatus>;
+  roleAssignments: Record<string, ProjectRole>;
+  reasons: string[];
+  compatibilitySummary: string[];
+  status: TeamProposalStatus;
+  slotsNeeded: number;
+  lockedAcceptedMemberIds: string[];
+  finalTeamId?: string;
 }
 
 export interface ChatMessage {
@@ -200,6 +274,7 @@ export interface TeamTaskBucket {
 export interface NotificationRecord {
   id: string;
   userId: string;
+  type: NotificationType;
   title: string;
   body: string;
   link?: string;
@@ -240,9 +315,12 @@ export interface AppState {
   matchingProfiles: MatchingProfile[];
   classes: ClassRecord[];
   projects: ProjectRecord[];
+  projectSettings: ProjectSetting[];
+  overflowState: OverflowState[];
   memberships: Membership[];
   aiSessions: AiSession[];
   queueSessions: QueueSession[];
+  teamProposals: TeamProposal[];
   teams: TeamRecord[];
   teamChat: TeamChatBucket[];
   teamTasks: TeamTaskBucket[];

@@ -15,6 +15,8 @@ import {
   AIResultPage,
   MatchModePickerPage,
   NotificationsPage,
+  ProposalDetailPage,
+  ProposalsPage,
   QueueConstraintsPage,
   QueueMatchPage,
   QueueRolePage,
@@ -65,6 +67,8 @@ export function App() {
             <Route path="/student/match" element={<MatchModePickerPage />} />
             <Route path="/student/match/ai" element={<AIChatPage />} />
             <Route path="/student/match/ai/result" element={<AIResultPage />} />
+            <Route path="/student/proposals" element={<ProposalsPage />} />
+            <Route path="/student/proposals/:id" element={<ProposalDetailPage />} />
             <Route path="/student/match/queue/roles" element={<QueueRolePage />} />
             <Route path="/student/match/queue/constraints" element={<QueueConstraintsPage />} />
             <Route path="/student/match/queue/status" element={<QueueStatusPage />} />

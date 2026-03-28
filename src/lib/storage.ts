@@ -3,16 +3,24 @@ import type {
   AvailabilitySlot,
   ContactMethod,
   GoalLevel,
+  Membership,
   MatchingProfile,
   MeetingPreference,
+  NotificationRecord,
+  NotificationType,
+  OverflowState,
+  ProjectSetting,
   ProjectRecord,
   ProjectRole,
   ResponseTime,
+  TeamMeetingOption,
+  TeamProposal,
+  TeamRecord,
   User,
   UserProfile,
   WorkingStyle,
 } from "@/lib/types";
-import { createId, generateJoinCode } from "@/lib/utils";
+import { createId, generateJoinCode, unique } from "@/lib/utils";
 
 type StorageKey =
   | "gf_auth"
@@ -20,9 +28,12 @@ type StorageKey =
   | "gf_matching_profile"
   | "gf_classes"
   | "gf_projects"
+  | "gf_project_settings"
+  | "gf_overflow_state"
   | "gf_memberships"
   | "gf_ai_sessions"
   | "gf_queue_sessions"
+  | "gf_team_proposals"
   | "gf_teams"
   | "gf_team_chat"
   | "gf_team_tasks"
@@ -35,9 +46,12 @@ const STORAGE_KEYS: StorageKey[] = [
   "gf_matching_profile",
   "gf_classes",
   "gf_projects",
+  "gf_project_settings",
+  "gf_overflow_state",
   "gf_memberships",
   "gf_ai_sessions",
   "gf_queue_sessions",
+  "gf_team_proposals",
   "gf_teams",
   "gf_team_chat",
   "gf_team_tasks",
@@ -46,8 +60,9 @@ const STORAGE_KEYS: StorageKey[] = [
 ];
 
 const SEED_VERSION_KEY = "gf_seed_version";
-const SEED_VERSION = "2026-03-26-v4";
+const SEED_VERSION = "2026-03-28-v6";
 export const DEMO_ACCOUNT_PASSWORD = "GroupFinder123!";
+const DEFAULT_PROPOSAL_EXPIRY_MINUTES = 30;
 
 const CONTACT_METHODS: ContactMethod[] = ["Line", "Discord", "WhatsApp", "Email", "Other"];
 const RESPONSE_TIMES: ResponseTime[] = ["<2h", "same day", "1-2 days"];
@@ -62,9 +77,12 @@ const EMPTY_STATE: AppState = {
   matchingProfiles: [],
   classes: [],
   projects: [],
+  projectSettings: [],
+  overflowState: [],
   memberships: [],
   aiSessions: [],
   queueSessions: [],
+  teamProposals: [],
   teams: [],
   teamChat: [],
   teamTasks: [],
@@ -77,6 +95,7 @@ type SeedUserEntry = {
   name: string;
   email: string;
   role: "student" | "admin";
+  volunteer?: boolean;
   profile: UserProfile;
   matchingProfile: Omit<MatchingProfile, "userId" | "updatedAt">;
 };
@@ -218,6 +237,7 @@ function buildSeedEntries(): SeedUserEntry[] {
       name: "Priya Nair",
       email: "priya.nair@groupfinder.edu",
       role: "student",
+      volunteer: true,
       profile: buildUserProfile("Product-minded designer who likes clear sprint plans.", {
         major: "Human-Computer Interaction",
         year: "3rd Year",
@@ -241,6 +261,7 @@ function buildSeedEntries(): SeedUserEntry[] {
       name: "Lucas Reed",
       email: "lucas.reed@groupfinder.edu",
       role: "student",
+      volunteer: true,
       profile: buildUserProfile("Builds quickly and documents decisions well.", {
         major: "Computer Science",
         year: "4th Year",
@@ -264,6 +285,7 @@ function buildSeedEntries(): SeedUserEntry[] {
       name: "Zoe Martinez",
       email: "zoe.martinez@groupfinder.edu",
       role: "student",
+      volunteer: true,
       profile: buildUserProfile("Enjoys framing the problem before diving into execution.", {
         major: "Psychology",
         year: "3rd Year",
@@ -287,6 +309,7 @@ function buildSeedEntries(): SeedUserEntry[] {
       name: "Marcus Chen",
       email: "marcus.chen@groupfinder.edu",
       role: "student",
+      volunteer: true,
       profile: buildUserProfile("Comfortable leading meetings and polishing final narratives.", {
         major: "Communication Arts",
         year: "4th Year",
@@ -459,6 +482,8 @@ function buildSeedUsers(timestamp: string): { users: User[]; matchingProfiles: M
       verified: true,
       profile: entry.profile,
       flags: {},
+      volunteer: entry.volunteer ?? false,
+      volunteerEnabledAt: entry.volunteer ? timestamp : undefined,
       createdAt: timestamp,
     })),
     matchingProfiles: entries.map((entry) => ({
@@ -489,6 +514,54 @@ function buildSeedProject(classId: string, timestamp: string): ProjectRecord {
   };
 }
 
+export function buildProjectSetting(
+  projectId: string,
+  teamSize: number = 4,
+  proposalExpiryMinutes: number = DEFAULT_PROPOSAL_EXPIRY_MINUTES,
+  overflowTeamsAllowed: number = 0,
+  formationDeadline: string = new Date().toISOString(),
+  forceOverflowAtDeadline: boolean = true,
+): ProjectSetting {
+  return {
+    projectId,
+    teamSize,
+    proposalExpiryMinutes,
+    overflowTeamsAllowed: Math.max(0, Math.round(overflowTeamsAllowed)),
+    formationDeadline,
+    forceOverflowAtDeadline,
+  };
+}
+
+function buildOverflowStateEntry(
+  projectId: string,
+  overflowTeamsAllowed: number = 0,
+  patch: Partial<OverflowState> = {},
+): OverflowState {
+  const overflowMemberIds = Array.isArray(patch.overflowMemberIds)
+    ? unique(patch.overflowMemberIds.filter((value): value is string => typeof value === "string"))
+    : [];
+
+  return {
+    projectId,
+    overflowTeamsAllowed: Math.max(0, Math.round(overflowTeamsAllowed)),
+    overflowSlotsFilled:
+      typeof patch.overflowSlotsFilled === "number"
+        ? Math.max(0, Math.round(patch.overflowSlotsFilled))
+        : overflowMemberIds.length,
+    overflowSlotsNeeded:
+      typeof patch.overflowSlotsNeeded === "number"
+        ? Math.max(0, Math.round(patch.overflowSlotsNeeded))
+        : Math.max(0, Math.round(overflowTeamsAllowed) - overflowMemberIds.length),
+    overflowMemberIds,
+    forcedOverflowMemberIds: Array.isArray(patch.forcedOverflowMemberIds)
+      ? unique(
+          patch.forcedOverflowMemberIds.filter((value): value is string => typeof value === "string"),
+        )
+      : [],
+    deadlineFinalized: Boolean(patch.deadlineFinalized),
+  };
+}
+
 function buildSeedState(): AppState {
   const timestamp = new Date().toISOString();
   const classId = "class_hci401";
@@ -511,6 +584,10 @@ function buildSeedState(): AppState {
       },
     ],
     projects: [project],
+    projectSettings: [
+      buildProjectSetting(project.id, project.teamSize, DEFAULT_PROPOSAL_EXPIRY_MINUTES, 2, project.deadline, true),
+    ],
+    overflowState: [buildOverflowStateEntry(project.id, 2)],
     memberships: users
       .filter((user) => user.role === "student")
       .map((user) => ({
@@ -519,10 +596,12 @@ function buildSeedState(): AppState {
         classId,
         projectId: project.id,
         status: "active" as const,
+        matchingStatus: "unmatched" as const,
         joinedAt: timestamp,
       })),
     aiSessions: [],
     queueSessions: [],
+    teamProposals: [],
     teams: [],
     teamChat: [],
     teamTasks: [],
@@ -530,6 +609,7 @@ function buildSeedState(): AppState {
       ...adminIds.map((userId) => ({
         id: createId("notification"),
         userId,
+        type: "GENERAL" as const,
         title: "Demo project seeded",
         body: "A starter class and project were created so you can jump straight into the prototype.",
         read: false,
@@ -621,6 +701,369 @@ function normalizeMatchingProfile(
   };
 }
 
+function normalizeNotificationType(type: unknown): NotificationType {
+  switch (type) {
+    case "PROPOSAL_INVITE":
+    case "PROPOSAL_ACCEPTED":
+    case "PROPOSAL_DECLINED":
+    case "PROPOSAL_REFILLING":
+    case "PROPOSAL_EXPIRED":
+    case "TEAM_CONFIRMED":
+      return type;
+    default:
+      return "GENERAL";
+  }
+}
+
+function normalizeProjectSetting(
+  setting: unknown,
+  projects: ProjectRecord[],
+): ProjectSetting | undefined {
+  const source = typeof setting === "object" && setting ? (setting as Record<string, unknown>) : {};
+  if (typeof source.projectId !== "string" || !source.projectId) {
+    return undefined;
+  }
+
+  const project = projects.find((entry) => entry.id === source.projectId);
+  const fallbackTeamSize = project?.teamSize || 4;
+
+  return {
+    projectId: source.projectId,
+    teamSize:
+      typeof source.teamSize === "number" && source.teamSize > 0
+        ? Math.round(source.teamSize)
+        : fallbackTeamSize,
+    proposalExpiryMinutes:
+      typeof source.proposalExpiryMinutes === "number" && source.proposalExpiryMinutes > 0
+        ? Math.round(source.proposalExpiryMinutes)
+        : DEFAULT_PROPOSAL_EXPIRY_MINUTES,
+    overflowTeamsAllowed:
+      typeof source.overflowTeamsAllowed === "number" && source.overflowTeamsAllowed >= 0
+        ? Math.round(source.overflowTeamsAllowed)
+        : 0,
+    formationDeadline:
+      typeof source.formationDeadline === "string" && source.formationDeadline
+        ? source.formationDeadline
+        : project?.deadline || new Date().toISOString(),
+    forceOverflowAtDeadline:
+      typeof source.forceOverflowAtDeadline === "boolean"
+        ? source.forceOverflowAtDeadline
+        : true,
+  };
+}
+
+function normalizeNotification(notification: unknown): NotificationRecord | undefined {
+  const source =
+    typeof notification === "object" && notification
+      ? (notification as Record<string, unknown>)
+      : {};
+
+  if (
+    typeof source.id !== "string" ||
+    typeof source.userId !== "string" ||
+    typeof source.title !== "string" ||
+    typeof source.body !== "string" ||
+    typeof source.createdAt !== "string"
+  ) {
+    return undefined;
+  }
+
+  return {
+    id: source.id,
+    userId: source.userId,
+    type: normalizeNotificationType(source.type),
+    title: source.title,
+    body: source.body,
+    link: typeof source.link === "string" ? source.link : undefined,
+    read: Boolean(source.read),
+    createdAt: source.createdAt,
+  };
+}
+
+function normalizeMeetingOption(
+  option: unknown,
+  fallbackProposerId: string,
+): TeamMeetingOption | undefined {
+  const source = typeof option === "object" && option ? (option as Record<string, unknown>) : {};
+  const startsAt = typeof source.startsAt === "string" ? source.startsAt : "";
+
+  if (!startsAt) {
+    return undefined;
+  }
+
+  return {
+    id:
+      typeof source.id === "string" && source.id
+        ? source.id
+        : createId("meeting"),
+    startsAt,
+    proposedBy:
+      typeof source.proposedBy === "string" && source.proposedBy
+        ? source.proposedBy
+        : fallbackProposerId,
+    voterIds: Array.isArray(source.voterIds)
+      ? [...new Set(source.voterIds.filter((value): value is string => typeof value === "string"))]
+      : [],
+    createdAt:
+      typeof source.createdAt === "string" && source.createdAt
+        ? source.createdAt
+        : new Date().toISOString(),
+  };
+}
+
+function normalizeTeamRecord(team: unknown): TeamRecord | undefined {
+  const source = typeof team === "object" && team ? (team as Record<string, unknown>) : {};
+  const memberIds = Array.isArray(source.memberIds)
+    ? source.memberIds.filter((value): value is string => typeof value === "string")
+    : [];
+
+  const roles =
+    typeof source.roles === "object" && source.roles
+      ? Object.fromEntries(
+          Object.entries(source.roles as Record<string, unknown>).filter(
+            (entry): entry is [string, string] =>
+              typeof entry[0] === "string" && typeof entry[1] === "string",
+          ),
+        )
+      : {};
+
+  const compatibilitySummary = Array.isArray(source.compatibilitySummary)
+    ? source.compatibilitySummary.filter((value): value is string => typeof value === "string")
+    : [];
+
+  if (
+    typeof source.id !== "string" ||
+    typeof source.classId !== "string" ||
+    typeof source.projectId !== "string" ||
+    typeof source.createdByMode !== "string" ||
+    typeof source.status !== "string" ||
+    typeof source.createdAt !== "string"
+  ) {
+    return undefined;
+  }
+
+  const fallbackProposerId = memberIds[0] || "";
+  const normalizedOptions = Array.isArray(source.meetingOptions)
+    ? source.meetingOptions
+        .map((option) => normalizeMeetingOption(option, fallbackProposerId))
+        .filter((option): option is TeamMeetingOption => Boolean(option))
+    : [];
+
+  const legacyMeetingTime =
+    typeof source.meetingTime === "string" && source.meetingTime ? source.meetingTime : undefined;
+
+  const meetingOptions =
+    normalizedOptions.length || !legacyMeetingTime
+      ? normalizedOptions
+      : [
+          {
+            id: createId("meeting"),
+            startsAt: legacyMeetingTime,
+            proposedBy: fallbackProposerId,
+            voterIds: memberIds,
+            createdAt: source.createdAt,
+          },
+        ];
+
+  return {
+    id: source.id,
+    classId: source.classId,
+    projectId: source.projectId,
+    memberIds,
+    roles,
+    createdByMode: source.createdByMode === "queue" ? "queue" : "ai",
+    createdFrom:
+      source.createdFrom === "AI_PROPOSAL"
+        ? "AI_PROPOSAL"
+        : source.createdFrom === "QUEUE_MATCH"
+          ? "QUEUE_MATCH"
+          : source.createdByMode === "queue"
+            ? "QUEUE_MATCH"
+            : "AI_MATCH",
+    status:
+      source.status === "active" || source.status === "paused" || source.status === "forming"
+        ? source.status
+        : "active",
+    compatibilitySummary,
+    meetingOptions,
+    maxSize:
+      typeof source.maxSize === "number" && source.maxSize >= memberIds.length
+        ? Math.round(source.maxSize)
+        : memberIds.length,
+    isOverflowTeam: Boolean(source.isOverflowTeam || source.overflowMemberId),
+    overflowMemberId:
+      typeof source.overflowMemberId === "string" && source.overflowMemberId
+        ? source.overflowMemberId
+        : undefined,
+    createdAt: source.createdAt,
+  };
+}
+
+function normalizeMembership(membership: unknown): Membership | undefined {
+  const source =
+    typeof membership === "object" && membership ? (membership as Record<string, unknown>) : {};
+
+  if (
+    typeof source.id !== "string" ||
+    typeof source.userId !== "string" ||
+    typeof source.classId !== "string" ||
+    typeof source.joinedAt !== "string"
+  ) {
+    return undefined;
+  }
+
+  const confirmedTeamId =
+    typeof source.confirmedTeamId === "string" && source.confirmedTeamId
+      ? source.confirmedTeamId
+      : typeof source.teamId === "string" && source.teamId
+        ? source.teamId
+        : undefined;
+  const matchingStatus =
+    source.matchingStatus === "proposed" || source.matchingStatus === "unmatched" || source.matchingStatus === "confirmed"
+      ? source.matchingStatus
+      : confirmedTeamId
+        ? "confirmed"
+        : "unmatched";
+
+  return {
+    id: source.id,
+    userId: source.userId,
+    classId: source.classId,
+    projectId: typeof source.projectId === "string" ? source.projectId : undefined,
+    status: source.status === "removed" ? "removed" : "active",
+    matchingStatus,
+    joinedAt: source.joinedAt,
+    teamId: typeof source.teamId === "string" ? source.teamId : undefined,
+    confirmedTeamId,
+  };
+}
+
+function normalizeOverflowState(
+  overflow: unknown,
+  projectId: string,
+  overflowTeamsAllowed: number,
+  teams: TeamRecord[],
+): OverflowState {
+  const source =
+    typeof overflow === "object" && overflow ? (overflow as Record<string, unknown>) : {};
+  const overflowMemberIds = unique(
+    teams
+      .filter(
+        (team) =>
+          team.projectId === projectId &&
+          team.isOverflowTeam &&
+          typeof team.overflowMemberId === "string" &&
+          team.overflowMemberId,
+      )
+      .map((team) => team.overflowMemberId as string),
+  );
+
+  return buildOverflowStateEntry(projectId, overflowTeamsAllowed, {
+    overflowMemberIds,
+    overflowSlotsFilled: overflowMemberIds.length,
+    overflowSlotsNeeded: Math.max(0, overflowTeamsAllowed - overflowMemberIds.length),
+    forcedOverflowMemberIds: Array.isArray(source.forcedOverflowMemberIds)
+      ? source.forcedOverflowMemberIds.filter(
+          (value): value is string => typeof value === "string" && overflowMemberIds.includes(value),
+        )
+      : [],
+    deadlineFinalized: Boolean(source.deadlineFinalized),
+  });
+}
+
+function normalizeProposalStatus(status: unknown): TeamProposal["status"] {
+  switch (status) {
+    case "pending":
+    case "refilling":
+    case "confirmed":
+    case "expired":
+    case "cancelled":
+      return status;
+    default:
+      return "pending";
+  }
+}
+
+function normalizeProposalMemberStatus(status: unknown): TeamProposal["memberStatuses"][string] {
+  switch (status) {
+    case "accepted":
+    case "declined":
+      return status;
+    default:
+      return "pending";
+  }
+}
+
+function normalizeTeamProposal(proposal: unknown, projects: ProjectRecord[]): TeamProposal | undefined {
+  const source = typeof proposal === "object" && proposal ? (proposal as Record<string, unknown>) : {};
+
+  if (
+    typeof source.id !== "string" ||
+    typeof source.projectId !== "string" ||
+    typeof source.createdByUserId !== "string" ||
+    typeof source.createdAt !== "string" ||
+    typeof source.expiresAt !== "string"
+  ) {
+    return undefined;
+  }
+
+  const memberIds = Array.isArray(source.memberIds)
+    ? source.memberIds.filter((value): value is string => typeof value === "string")
+    : [];
+  const memberStatuses =
+    typeof source.memberStatuses === "object" && source.memberStatuses
+      ? Object.fromEntries(
+          Object.entries(source.memberStatuses as Record<string, unknown>).map(([userId, status]) => [
+            userId,
+            normalizeProposalMemberStatus(status),
+          ]),
+        )
+      : {};
+  const roleAssignments =
+    typeof source.roleAssignments === "object" && source.roleAssignments
+      ? Object.fromEntries(
+          Object.entries(source.roleAssignments as Record<string, unknown>).filter(
+            (entry): entry is [string, string] =>
+              typeof entry[0] === "string" && typeof entry[1] === "string",
+          ),
+        )
+      : {};
+  const reasons = Array.isArray(source.reasons)
+    ? source.reasons.filter((value): value is string => typeof value === "string")
+    : [];
+  const compatibilitySummary = Array.isArray(source.compatibilitySummary)
+    ? source.compatibilitySummary.filter((value): value is string => typeof value === "string")
+    : [];
+  const lockedAcceptedMemberIds = Array.isArray(source.lockedAcceptedMemberIds)
+    ? source.lockedAcceptedMemberIds.filter((value): value is string => typeof value === "string")
+    : [];
+  const project = projects.find((entry) => entry.id === source.projectId);
+
+  return {
+    id: source.id,
+    projectId: source.projectId,
+    createdByUserId: source.createdByUserId,
+    createdAt: source.createdAt,
+    expiresAt: source.expiresAt,
+    teamSize:
+      typeof source.teamSize === "number" && source.teamSize > 0
+        ? Math.round(source.teamSize)
+        : project?.teamSize || 4,
+    memberIds,
+    memberStatuses,
+    roleAssignments,
+    reasons,
+    compatibilitySummary,
+    status: normalizeProposalStatus(source.status),
+    slotsNeeded:
+      typeof source.slotsNeeded === "number" && source.slotsNeeded >= 0
+        ? Math.round(source.slotsNeeded)
+        : 0,
+    lockedAcceptedMemberIds,
+    finalTeamId: typeof source.finalTeamId === "string" ? source.finalTeamId : undefined,
+  };
+}
+
 function preferExistingEnum<T extends string>(existing: T, fallbackValue: T, seedValue: T): T {
   return existing !== fallbackValue || seedValue === fallbackValue ? existing : seedValue;
 }
@@ -685,6 +1128,10 @@ function mergeSeedState(state: AppState): AppState {
       passwordHash: seedUser.passwordHash,
       role: seedUser.role,
       verified: true,
+      volunteer: existing?.volunteer ?? seedUser.volunteer ?? false,
+      volunteerEnabledAt:
+        existing?.volunteerEnabledAt ||
+        (existing?.volunteer ?? seedUser.volunteer ? timestamp : undefined),
       profile: mergeSeedProfile(existing?.profile, seedUser.profile),
       flags: existing?.flags || seedUser.flags,
       createdAt: existing?.createdAt || seedUser.createdAt,
@@ -720,6 +1167,24 @@ function mergeSeedState(state: AppState): AppState {
     }
   });
 
+  const projectSettingsById = new Map(
+    state.projectSettings.map((setting) => [setting.projectId, setting]),
+  );
+  seed.projectSettings.forEach((seedSetting) => {
+    if (!projectSettingsById.has(seedSetting.projectId)) {
+      projectSettingsById.set(seedSetting.projectId, seedSetting);
+    }
+  });
+
+  const overflowStateByProjectId = new Map(
+    state.overflowState.map((overflow) => [overflow.projectId, overflow]),
+  );
+  seed.overflowState.forEach((seedOverflow) => {
+    if (!overflowStateByProjectId.has(seedOverflow.projectId)) {
+      overflowStateByProjectId.set(seedOverflow.projectId, seedOverflow);
+    }
+  });
+
   const memberships = [...state.memberships];
   const seedProject = seed.projects[0];
   seed.users
@@ -740,6 +1205,7 @@ function mergeSeedState(state: AppState): AppState {
           classId: seedProject.classId,
           projectId: seedProject.id,
           status: "active",
+          matchingStatus: "unmatched",
           joinedAt: timestamp,
         });
       }
@@ -760,6 +1226,7 @@ function mergeSeedState(state: AppState): AppState {
         notifications.unshift({
           id: createId("notification"),
           userId: admin.id,
+          type: "GENERAL",
           title: "Demo project seeded",
           body: "A starter class and project were created so you can jump straight into the prototype.",
           read: false,
@@ -775,6 +1242,8 @@ function mergeSeedState(state: AppState): AppState {
     matchingProfiles: [...matchingById.values()],
     classes: [...classesById.values()],
     projects: [...projectsById.values()],
+    projectSettings: [...projectSettingsById.values()],
+    overflowState: [...overflowStateByProjectId.values()],
     memberships,
     notifications,
   };
@@ -782,17 +1251,57 @@ function mergeSeedState(state: AppState): AppState {
 
 function migrateState(state: AppState): AppState {
   const existingProfiles = new Map(state.matchingProfiles.map((profile) => [profile.userId, profile]));
+  const projects = state.projects;
+  const projectSettings = [
+    ...new Map(
+      [
+        ...projects.map((project) => buildProjectSetting(project.id, project.teamSize)),
+        ...state.projectSettings
+          .map((setting) => normalizeProjectSetting(setting, projects))
+          .filter((setting): setting is ProjectSetting => Boolean(setting)),
+      ].map((setting) => [setting.projectId, setting]),
+    ).values(),
+  ];
+  const teams = state.teams
+    .map((team) => normalizeTeamRecord(team))
+    .filter((team): team is TeamRecord => Boolean(team));
+  const overflowState = projects.map((project) => {
+    const setting =
+      projectSettings.find((entry) => entry.projectId === project.id) ||
+      buildProjectSetting(project.id, project.teamSize, DEFAULT_PROPOSAL_EXPIRY_MINUTES, 0, project.deadline, true);
+    const existing = state.overflowState.find((entry) => entry.projectId === project.id);
+    return normalizeOverflowState(existing, project.id, setting.overflowTeamsAllowed, teams);
+  });
 
   return {
     ...state,
     users: state.users.map((user) => ({
       ...user,
       passwordHash: normalizePasswordHash(user.passwordHash),
+      volunteer: Boolean(user.volunteer),
+      volunteerEnabledAt:
+        typeof user.volunteerEnabledAt === "string" && user.volunteerEnabledAt
+          ? user.volunteerEnabledAt
+          : user.volunteer
+            ? user.createdAt
+            : undefined,
       profile: normalizeUserProfile(user.profile),
     })),
+    memberships: state.memberships
+      .map((membership) => normalizeMembership(membership))
+      .filter((membership): membership is Membership => Boolean(membership)),
     matchingProfiles: state.users.map((user) =>
       normalizeMatchingProfile(user.id, existingProfiles.get(user.id), user.profile),
     ),
+    projectSettings,
+    overflowState,
+    teamProposals: state.teamProposals
+      .map((proposal) => normalizeTeamProposal(proposal, projects))
+      .filter((proposal): proposal is TeamProposal => Boolean(proposal)),
+    teams,
+    notifications: state.notifications
+      .map((notification) => normalizeNotification(notification))
+      .filter((notification): notification is NotificationRecord => Boolean(notification)),
   };
 }
 
@@ -831,12 +1340,18 @@ function keyToStateKey(key: StorageKey): keyof AppState {
       return "classes";
     case "gf_projects":
       return "projects";
+    case "gf_project_settings":
+      return "projectSettings";
+    case "gf_overflow_state":
+      return "overflowState";
     case "gf_memberships":
       return "memberships";
     case "gf_ai_sessions":
       return "aiSessions";
     case "gf_queue_sessions":
       return "queueSessions";
+    case "gf_team_proposals":
+      return "teamProposals";
     case "gf_teams":
       return "teams";
     case "gf_team_chat":
@@ -859,9 +1374,12 @@ export function loadState(): AppState {
     matchingProfiles: readStorage("gf_matching_profile", []),
     classes: readStorage("gf_classes", []),
     projects: readStorage("gf_projects", []),
+    projectSettings: readStorage("gf_project_settings", []),
+    overflowState: readStorage("gf_overflow_state", []),
     memberships: readStorage("gf_memberships", []),
     aiSessions: readStorage("gf_ai_sessions", []),
     queueSessions: readStorage("gf_queue_sessions", []),
+    teamProposals: readStorage("gf_team_proposals", []),
     teams: readStorage("gf_teams", []),
     teamChat: readStorage("gf_team_chat", []),
     teamTasks: readStorage("gf_team_tasks", []),
@@ -882,9 +1400,12 @@ export function persistState(state: AppState): void {
   writeStorage("gf_matching_profile", state.matchingProfiles);
   writeStorage("gf_classes", state.classes);
   writeStorage("gf_projects", state.projects);
+  writeStorage("gf_project_settings", state.projectSettings);
+  writeStorage("gf_overflow_state", state.overflowState);
   writeStorage("gf_memberships", state.memberships);
   writeStorage("gf_ai_sessions", state.aiSessions);
   writeStorage("gf_queue_sessions", state.queueSessions);
+  writeStorage("gf_team_proposals", state.teamProposals);
   writeStorage("gf_teams", state.teams);
   writeStorage("gf_team_chat", state.teamChat);
   writeStorage("gf_team_tasks", state.teamTasks);
@@ -912,6 +1433,7 @@ export function buildNewUser(
     passwordHash: hashPassword(password),
     role,
     verified: true,
+    volunteer: false,
     profile: buildUserProfile(
       role === "admin"
         ? "Instructor or TA account created for demo access."
@@ -951,6 +1473,9 @@ export function defaultProjectPayload() {
     description: "Short project brief",
     teamSize: 4,
     deadline: "2026-05-20",
+    overflowTeamsAllowed: 0,
+    formationDeadline: "2026-05-20T18:00",
+    forceOverflowAtDeadline: true,
     roleTemplates: ["Backend/SQL", "UI/Design", "Analyst", "Writer/Presenter"] as ProjectRole[],
   };
 }

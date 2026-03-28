@@ -8,17 +8,21 @@ import {
 } from "react";
 import {
   buildAiSuggestion,
+  buildProposalCompatibilitySummary,
   buildQueueSuggestion,
   buildTeamArtifacts,
+  findProposalRefillCandidates,
+  isUserInConfirmedProjectTeam,
   resolveCurrentProject,
+  resolveCurrentTeam,
   resolveStudentProjects,
   resolveStudentTeams,
-  resolveCurrentTeam,
 } from "@/lib/matching";
 import {
   DEMO_ACCOUNT_PASSWORD,
   buildDefaultMatchingProfile,
   buildNewUser,
+  buildProjectSetting,
   createProjectRecord,
   defaultProjectPayload,
   hashPassword,
@@ -31,17 +35,22 @@ import type {
   AppState,
   AuthState,
   MatchSuggestion,
+  Membership,
   MatchingProfile,
+  NotificationType,
+  OverflowState,
+  ProjectSetting,
   ProjectRecord,
   ProjectRole,
   QueueConstraints,
   QueueSession,
   ReportFormInput,
   TeamRecord,
+  TeamProposal,
   User,
   UserProfile,
 } from "@/lib/types";
-import { createId, formatDate, generateJoinCode } from "@/lib/utils";
+import { createId, formatDate, generateJoinCode, overlapCount, unique } from "@/lib/utils";
 
 interface AppContextValue {
   state: AppState;
@@ -66,6 +75,12 @@ interface AppContextValue {
     classId: string,
     payload: ReturnType<typeof defaultProjectPayload>,
   ) => ProjectRecord;
+  updateProjectSettings: (payload: {
+    projectId: string;
+    overflowTeamsAllowed: number;
+    formationDeadline: string;
+    forceOverflowAtDeadline: boolean;
+  }) => { ok: boolean; message: string };
   adminCreateStudent: (payload: {
     name: string;
     email: string;
@@ -89,7 +104,11 @@ interface AppContextValue {
   regenerateJoinCode: (projectId: string) => void;
   runAiMatch: (answers: AiAnswers) => MatchSuggestion | undefined;
   rematchAi: () => MatchSuggestion | undefined;
-  acceptAiMatch: () => string | undefined;
+  proposeAiTeam: () => { ok: boolean; message: string; proposalId?: string };
+  respondToProposal: (
+    proposalId: string,
+    decision: "accepted" | "declined",
+  ) => { ok: boolean; message: string; proposalId?: string; teamId?: string };
   saveQueueRoles: (primaryRole: ProjectRole, secondaryRole?: ProjectRole) => void;
   saveQueueConstraints: (constraints: QueueConstraints) => void;
   enterQueue: () => void;
@@ -99,7 +118,8 @@ interface AppContextValue {
   acceptQueueMatch: () => string | undefined;
   sendTeamMessage: (content: string) => { ok: boolean; message?: string };
   toggleTask: (taskId: string) => void;
-  setMeetingTime: (meetingTime: string) => void;
+  addMeetingOption: (startsAt: string) => { ok: boolean; message: string };
+  voteMeetingOption: (optionId: string) => void;
   submitReport: (payload: ReportFormInput) => { ok: boolean; message: string };
   markNotificationRead: (notificationId: string) => void;
   markAllNotificationsRead: () => void;
@@ -108,6 +128,42 @@ interface AppContextValue {
     action: "warn" | "mute" | "restrict matching" | "remove from project",
     note: string,
   ) => void;
+}
+
+declare global {
+  interface Window {
+    gfDebug?: {
+      help: () => Record<string, string>;
+      demoAccounts: () => {
+        password: string;
+        students: string[];
+        admins: string[];
+      };
+      inspectSession: () => Record<string, unknown>;
+      inspectProject: (projectId?: string) => Record<string, unknown>;
+      forceAiProposal: (
+        projectId?: string,
+      ) => { ok: boolean; message: string; proposalId?: string };
+      acceptAllPendingProposal: (
+        proposalId?: string,
+      ) => { ok: boolean; message: string; proposalId?: string; teamId?: string };
+      declinePendingProposal: (
+        proposalId?: string,
+        userId?: string,
+      ) => { ok: boolean; message: string; proposalId?: string };
+      forceQueueMatch: (projectId?: string) => { ok: boolean; message: string };
+      inspectQueue: (projectId?: string) => {
+        ok: boolean;
+        message: string;
+        queue?: QueueSession;
+      };
+      finalizeOverflow: (
+        projectId?: string,
+      ) => { ok: boolean; message: string; overflow?: OverflowState };
+      setVolunteer: (enabled: boolean) => { ok: boolean; message: string };
+      resetDemoData: () => { ok: boolean; message: string };
+    };
+  }
 }
 
 const AppContext = createContext<AppContextValue | undefined>(undefined);
@@ -134,12 +190,18 @@ function writeActiveProjectId(projectId?: string): void {
   window.sessionStorage.setItem(ACTIVE_PROJECT_KEY, projectId);
 }
 
+function toIsoDateTime(value: string, fallback: string): string {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? fallback : parsed.toISOString();
+}
+
 function pushNotification(
   state: AppState,
   userId: string,
   title: string,
   body: string,
   link?: string,
+  type: NotificationType = "GENERAL",
 ): AppState {
   return {
     ...state,
@@ -147,6 +209,7 @@ function pushNotification(
       {
         id: createId("notification"),
         userId,
+        type,
         title,
         body,
         link,
@@ -174,42 +237,841 @@ function getOrCreateQueueSession(state: AppState, userId: string, projectId: str
   );
 }
 
+function getProjectSetting(state: AppState, project: ProjectRecord): ProjectSetting {
+  return (
+    state.projectSettings.find((setting) => setting.projectId === project.id) ||
+    buildProjectSetting(project.id, project.teamSize, undefined, 0, project.deadline, true)
+  );
+}
+
+function isMembershipConfirmed(
+  membership: Pick<Membership, "status" | "matchingStatus" | "confirmedTeamId" | "teamId">,
+): boolean {
+  return (
+    membership.status === "active" &&
+    (membership.matchingStatus === "confirmed" ||
+      Boolean(membership.confirmedTeamId || membership.teamId))
+  );
+}
+
+function isUserInActiveProposal(
+  state: AppState,
+  userId: string,
+  projectId: string,
+  excludedProposalId?: string,
+): boolean {
+  return state.teamProposals.some(
+    (proposal) =>
+      proposal.id !== excludedProposalId &&
+      proposal.projectId === projectId &&
+      isProposalActive(proposal) &&
+      proposal.memberStatuses[userId] &&
+      proposal.memberStatuses[userId] !== "declined",
+  );
+}
+
+function replaceOverflowState(state: AppState, overflow: OverflowState): AppState {
+  return {
+    ...state,
+    overflowState: state.overflowState.some((entry) => entry.projectId === overflow.projectId)
+      ? state.overflowState.map((entry) =>
+          entry.projectId === overflow.projectId ? overflow : entry,
+        )
+      : [overflow, ...state.overflowState],
+  };
+}
+
+function getOverflowState(state: AppState, project: ProjectRecord): OverflowState {
+  const setting = getProjectSetting(state, project);
+  return (
+    state.overflowState.find((entry) => entry.projectId === project.id) || {
+      projectId: project.id,
+      overflowTeamsAllowed: setting.overflowTeamsAllowed,
+      overflowSlotsNeeded: Math.max(setting.overflowTeamsAllowed, 0),
+      overflowSlotsFilled: 0,
+      overflowMemberIds: [],
+      forcedOverflowMemberIds: [],
+      deadlineFinalized: false,
+    }
+  );
+}
+
+function isProposalActive(proposal: TeamProposal): boolean {
+  return proposal.status === "pending" || proposal.status === "refilling";
+}
+
+function getAcceptedProposalMemberIds(proposal: TeamProposal): string[] {
+  return Object.entries(proposal.memberStatuses)
+    .filter(([, status]) => status === "accepted")
+    .map(([userId]) => userId);
+}
+
+function getPendingProposalMemberIds(proposal: TeamProposal): string[] {
+  return proposal.memberIds.filter((userId) => proposal.memberStatuses[userId] === "pending");
+}
+
+function getCurrentProposalMemberIds(proposal: TeamProposal): string[] {
+  return proposal.memberIds.filter((userId) => proposal.memberStatuses[userId] !== "declined");
+}
+
+function getProposalById(state: AppState, proposalId: string): TeamProposal | undefined {
+  return state.teamProposals.find((proposal) => proposal.id === proposalId);
+}
+
+function hasActiveProposalForUser(state: AppState, userId: string, projectId: string): boolean {
+  return state.teamProposals.some(
+    (proposal) =>
+      proposal.projectId === projectId &&
+      proposal.createdByUserId === userId &&
+      isProposalActive(proposal),
+  );
+}
+
+function replaceProposal(state: AppState, proposal: TeamProposal): AppState {
+  return {
+    ...state,
+    teamProposals: state.teamProposals.map((entry) =>
+      entry.id === proposal.id ? proposal : entry,
+    ),
+  };
+}
+
+function notifyProposalMembers(
+  state: AppState,
+  memberIds: string[],
+  title: string,
+  body: string,
+  link: string,
+  type: NotificationType,
+): AppState {
+  return memberIds.reduce(
+    (next, memberId) => pushNotification(next, memberId, title, body, link, type),
+    state,
+  );
+}
+
+function confirmProposalTeam(
+  state: AppState,
+  proposal: TeamProposal,
+  project: ProjectRecord,
+): AppState {
+  const memberIds = proposal.memberIds.filter(
+    (userId) => proposal.memberStatuses[userId] === "accepted",
+  );
+  const compatibilitySummary = buildProposalCompatibilitySummary(
+    state,
+    memberIds,
+    proposal.roleAssignments,
+  );
+  const artifacts = buildTeamArtifacts(
+    project,
+    "ai",
+    memberIds,
+    proposal.roleAssignments,
+    compatibilitySummary,
+    "AI_PROPOSAL",
+  );
+
+  let next = attachMembersToProject(
+    {
+      ...state,
+      teams: [artifacts.team, ...state.teams],
+      teamChat: [artifacts.chatBucket, ...state.teamChat],
+      teamTasks: [artifacts.taskBucket, ...state.teamTasks],
+    },
+    memberIds,
+    project,
+    artifacts.team.id,
+  );
+
+  const confirmedProposal: TeamProposal = {
+    ...proposal,
+    memberIds,
+    compatibilitySummary,
+    lockedAcceptedMemberIds: memberIds,
+    slotsNeeded: 0,
+    status: "confirmed",
+    finalTeamId: artifacts.team.id,
+  };
+  next = replaceProposal(next, confirmedProposal);
+
+  memberIds.forEach((memberId) => {
+    next = pushNotification(
+      next,
+      memberId,
+      "Team confirmed",
+      `Your proposal for ${project.name} is complete. Open the team workspace.`,
+      "/student/team",
+      "TEAM_CONFIRMED",
+    );
+  });
+
+  next = syncProjectMembershipStatuses(next, project);
+  return applyOverflowPlacement(next, project);
+}
+
+function expireProposal(state: AppState, proposal: TeamProposal, project?: ProjectRecord): AppState {
+  if (!isProposalActive(proposal)) {
+    return state;
+  }
+
+  const acceptedMembers = getAcceptedProposalMemberIds(proposal);
+  let next = replaceProposal(state, {
+    ...proposal,
+    status: "expired",
+    slotsNeeded: 0,
+  });
+
+  acceptedMembers.forEach((memberId) => {
+    next = pushNotification(
+      next,
+      memberId,
+      "Proposal expired",
+      `Your proposal${project ? ` for ${project.name}` : ""} expired. Please rematch or use Lucky Draw.`,
+      "/student/match",
+      "PROPOSAL_EXPIRED",
+    );
+  });
+
+  return project ? syncProjectMembershipStatuses(next, project) : next;
+}
+
+function refillProposal(
+  state: AppState,
+  proposal: TeamProposal,
+  project: ProjectRecord,
+): AppState {
+  const currentMemberIds = getCurrentProposalMemberIds(proposal);
+  const acceptedMembers = currentMemberIds.filter(
+    (userId) => proposal.memberStatuses[userId] === "accepted",
+  );
+  const pendingMembers = currentMemberIds.filter(
+    (userId) => proposal.memberStatuses[userId] === "pending",
+  );
+  const slotsNeeded = Math.max(proposal.teamSize - (acceptedMembers.length + pendingMembers.length), 0);
+
+  if (slotsNeeded <= 0) {
+    return replaceProposal(state, {
+      ...proposal,
+      memberIds: currentMemberIds,
+      lockedAcceptedMemberIds: acceptedMembers,
+      slotsNeeded: 0,
+      compatibilitySummary: buildProposalCompatibilitySummary(
+        state,
+        currentMemberIds,
+        proposal.roleAssignments,
+      ),
+      status: proposal.status === "refilling" ? "refilling" : "pending",
+    });
+  }
+
+  const excludedIds = new Set(Object.keys(proposal.memberStatuses));
+  const refill = findProposalRefillCandidates(
+    state,
+    project,
+    currentMemberIds,
+    excludedIds,
+    proposal.roleAssignments,
+    slotsNeeded,
+    proposal.id,
+  );
+  const nextMemberIds = [...currentMemberIds, ...refill.candidateIds];
+  const nextStatuses = { ...proposal.memberStatuses };
+  refill.candidateIds.forEach((userId) => {
+    nextStatuses[userId] = "pending";
+  });
+
+  const nextProposal: TeamProposal = {
+    ...proposal,
+    memberIds: nextMemberIds,
+    memberStatuses: nextStatuses,
+    roleAssignments: refill.roleAssignments,
+    lockedAcceptedMemberIds: acceptedMembers,
+    slotsNeeded: Math.max(
+      proposal.teamSize -
+        (acceptedMembers.length + pendingMembers.length + refill.candidateIds.length),
+      0,
+    ),
+    compatibilitySummary: buildProposalCompatibilitySummary(
+      state,
+      nextMemberIds,
+      refill.roleAssignments,
+    ),
+    status: "refilling",
+  };
+
+  let next = ensureProjectMemberships(state, nextMemberIds, project, "proposed");
+  next = replaceProposal(next, nextProposal);
+
+  refill.candidateIds.forEach((userId) => {
+    next = pushNotification(
+      next,
+      userId,
+      "Team proposal invite",
+      `You were invited to join a proposed team for ${project.name}. Review the roster and respond.`,
+      `/student/proposals/${proposal.id}`,
+      "PROPOSAL_INVITE",
+    );
+  });
+
+  if (acceptedMembers.length) {
+    next = notifyProposalMembers(
+      next,
+      acceptedMembers,
+      "Proposal is refilling",
+      `We’re refilling the open slot${proposal.teamSize - acceptedMembers.length === 1 ? "" : "s"} for ${project.name}.`,
+      `/student/proposals/${proposal.id}`,
+      "PROPOSAL_REFILLING",
+    );
+  }
+
+  return syncProjectMembershipStatuses(next, project);
+}
+
+function reconcileProposal(state: AppState, proposalId: string): AppState {
+  const proposal = getProposalById(state, proposalId);
+  if (!proposal || !isProposalActive(proposal)) {
+    return state;
+  }
+
+  const project = state.projects.find((entry) => entry.id === proposal.projectId);
+  if (!project) {
+    return state;
+  }
+
+  if (new Date().getTime() > new Date(proposal.expiresAt).getTime()) {
+    return expireProposal(state, proposal, project);
+  }
+
+  const activeMemberIds = getCurrentProposalMemberIds(proposal);
+  const acceptedMembers = activeMemberIds.filter(
+    (userId) => proposal.memberStatuses[userId] === "accepted",
+  );
+  if (acceptedMembers.length >= proposal.teamSize) {
+    return confirmProposalTeam(state, proposal, project);
+  }
+
+  const pendingMembers = getPendingProposalMemberIds(proposal);
+  const slotsNeeded = Math.max(proposal.teamSize - (acceptedMembers.length + pendingMembers.length), 0);
+
+  if (slotsNeeded > 0 || proposal.status === "refilling") {
+    return refillProposal(state, proposal, project);
+  }
+
+  return syncProjectMembershipStatuses(replaceProposal(state, {
+    ...proposal,
+    memberIds: activeMemberIds,
+    lockedAcceptedMemberIds: acceptedMembers,
+    slotsNeeded: 0,
+    compatibilitySummary: buildProposalCompatibilitySummary(
+      state,
+      activeMemberIds,
+      proposal.roleAssignments,
+    ),
+    status: "pending",
+  }), project);
+}
+
+function expireActiveProposals(state: AppState): AppState {
+  return state.teamProposals.reduce((next, proposal) => {
+    if (
+      !isProposalActive(proposal) ||
+      new Date().getTime() <= new Date(proposal.expiresAt).getTime()
+    ) {
+      return next;
+    }
+
+    const project = next.projects.find((entry) => entry.id === proposal.projectId);
+    return expireProposal(next, proposal, project);
+  }, state);
+}
+
 function attachMembersToProject(
   state: AppState,
   memberIds: string[],
   project: ProjectRecord,
   teamId: string,
 ): AppState {
-  const attached = new Set<string>();
-  const updatedMemberships = state.memberships.map((membership) => {
-    if (
+  let next = ensureProjectMemberships(state, memberIds, project, "confirmed");
+  next = {
+    ...next,
+    memberships: next.memberships.map((membership) =>
       memberIds.includes(membership.userId) &&
       membership.projectId === project.id &&
       membership.status === "active"
-    ) {
-      attached.add(membership.userId);
-      return { ...membership, classId: project.classId, teamId };
+        ? {
+            ...membership,
+            classId: project.classId,
+            teamId,
+            confirmedTeamId: teamId,
+            matchingStatus: "confirmed",
+          }
+        : membership,
+    ),
+  };
+
+  return syncProjectMembershipStatuses(next, project);
+}
+
+function ensureProjectMemberships(
+  state: AppState,
+  memberIds: string[],
+  project: ProjectRecord,
+  matchingStatus: Membership["matchingStatus"] = "unmatched",
+): AppState {
+  let changed = false;
+  const now = new Date().toISOString();
+  const memberships = [...state.memberships];
+
+  memberIds.forEach((memberId) => {
+    const removedMembership = memberships.find(
+      (membership) =>
+        membership.userId === memberId &&
+        membership.projectId === project.id &&
+        membership.status === "removed",
+    );
+    if (removedMembership) {
+      return;
     }
 
-    return membership;
-  });
+    const existing = memberships.find(
+      (membership) =>
+        membership.userId === memberId &&
+        membership.projectId === project.id &&
+        membership.status === "active",
+    );
 
-  const newMemberships = memberIds
-    .filter((memberId) => !attached.has(memberId))
-    .map((memberId) => ({
+    if (existing) {
+      if (
+        existing.matchingStatus !== matchingStatus &&
+        !isMembershipConfirmed(existing)
+      ) {
+        const index = memberships.findIndex((membership) => membership.id === existing.id);
+        memberships[index] = {
+          ...existing,
+          matchingStatus,
+          teamId: matchingStatus === "confirmed" ? existing.teamId : undefined,
+          confirmedTeamId:
+            matchingStatus === "confirmed" ? existing.confirmedTeamId : undefined,
+        };
+        changed = true;
+      }
+      return;
+    }
+
+    memberships.unshift({
       id: createId("membership"),
       userId: memberId,
       classId: project.classId,
       projectId: project.id,
-      status: "active" as const,
-      joinedAt: new Date().toISOString(),
-      teamId,
-    }));
+      status: "active",
+      matchingStatus,
+      joinedAt: now,
+    });
+    changed = true;
+  });
+
+  return changed ? { ...state, memberships } : state;
+}
+
+function syncProjectMembershipStatuses(state: AppState, project: ProjectRecord): AppState {
+  const confirmedTeamByUserId = new Map<string, string>();
+  state.teams
+    .filter((team) => team.projectId === project.id)
+    .forEach((team) => {
+      team.memberIds.forEach((memberId) => confirmedTeamByUserId.set(memberId, team.id));
+    });
+
+  const proposedIds = new Set<string>();
+  state.teamProposals
+    .filter((proposal) => proposal.projectId === project.id && isProposalActive(proposal))
+    .forEach((proposal) => {
+      Object.entries(proposal.memberStatuses).forEach(([userId, status]) => {
+        if (status !== "declined" && !confirmedTeamByUserId.has(userId)) {
+          proposedIds.add(userId);
+        }
+      });
+    });
+
+  let next = ensureProjectMemberships(state, [...proposedIds], project, "proposed");
+  next = {
+    ...next,
+    memberships: next.memberships.map((membership) => {
+      if (membership.projectId !== project.id || membership.status !== "active") {
+        return membership;
+      }
+
+      const confirmedTeamId = confirmedTeamByUserId.get(membership.userId);
+      if (confirmedTeamId) {
+        return {
+          ...membership,
+          teamId: confirmedTeamId,
+          confirmedTeamId,
+          matchingStatus: "confirmed",
+        };
+      }
+
+      if (proposedIds.has(membership.userId)) {
+        return {
+          ...membership,
+          teamId: undefined,
+          confirmedTeamId: undefined,
+          matchingStatus: "proposed",
+        };
+      }
+
+      return {
+        ...membership,
+        teamId: undefined,
+        confirmedTeamId: undefined,
+        matchingStatus: "unmatched",
+      };
+    }),
+  };
+
+  return next;
+}
+
+function appendSystemTeamMessage(state: AppState, teamId: string, content: string): AppState {
+  const message = {
+    id: createId("message"),
+    teamId,
+    userId: "system",
+    content,
+    createdAt: new Date().toISOString(),
+  };
+
+  if (state.teamChat.some((bucket) => bucket.teamId === teamId)) {
+    return {
+      ...state,
+      teamChat: state.teamChat.map((bucket) =>
+        bucket.teamId === teamId
+          ? { ...bucket, messages: [...bucket.messages, message] }
+          : bucket,
+      ),
+    };
+  }
 
   return {
     ...state,
-    memberships: [...newMemberships, ...updatedMemberships],
+    teamChat: [{ teamId, messages: [message] }, ...state.teamChat],
   };
+}
+
+function syncOverflowProjectState(
+  state: AppState,
+  project: ProjectRecord,
+  patch: Partial<OverflowState> = {},
+): AppState {
+  const setting = getProjectSetting(state, project);
+  const existing = getOverflowState(state, project);
+  const overflowMemberIds = unique(
+    state.teams
+      .filter(
+        (team) =>
+          team.projectId === project.id &&
+          team.isOverflowTeam &&
+          typeof team.overflowMemberId === "string" &&
+          team.overflowMemberId,
+      )
+      .map((team) => team.overflowMemberId as string),
+  );
+
+  const nextOverflow: OverflowState = {
+    projectId: project.id,
+    overflowTeamsAllowed: setting.overflowTeamsAllowed,
+    overflowSlotsFilled: overflowMemberIds.length,
+    overflowSlotsNeeded: Math.max(setting.overflowTeamsAllowed - overflowMemberIds.length, 0),
+    overflowMemberIds,
+    forcedOverflowMemberIds: unique([
+      ...existing.forcedOverflowMemberIds,
+      ...(patch.forcedOverflowMemberIds || []),
+    ]).filter((userId) => overflowMemberIds.includes(userId)),
+    deadlineFinalized:
+      typeof patch.deadlineFinalized === "boolean"
+        ? patch.deadlineFinalized
+        : existing.deadlineFinalized,
+  };
+
+  return replaceOverflowState(state, nextOverflow);
+}
+
+function scoreOverflowCandidate(
+  state: AppState,
+  team: TeamRecord,
+  candidate: { user: User; matching: MatchingProfile; joinedAt: string },
+  requireAvailabilityOverlap: boolean,
+): number | undefined {
+  const teamProfiles = team.memberIds.map((memberId) => getMatchingProfile(state, memberId));
+  const teamAvailability = unique(teamProfiles.flatMap((profile) => profile.availability));
+  const availabilityScore = overlapCount(candidate.matching.availability, teamAvailability);
+
+  if (
+    requireAvailabilityOverlap &&
+    teamAvailability.length &&
+    candidate.matching.availability.length &&
+    availabilityScore === 0
+  ) {
+    return undefined;
+  }
+
+  const teamRoles = new Set(Object.values(team.roles));
+  const teamSkills = unique(teamProfiles.flatMap((profile) => profile.skills));
+  const roleBonus = !teamRoles.has(candidate.matching.rolePreference)
+    ? 6
+    : candidate.matching.secondaryRole && !teamRoles.has(candidate.matching.secondaryRole)
+      ? 4
+      : 1;
+  const goalBonus = teamProfiles.some((profile) => profile.goalLevel === candidate.matching.goalLevel)
+    ? 3
+    : 0;
+  const styleBonus = teamProfiles.some(
+    (profile) => profile.workingStyle === candidate.matching.workingStyle,
+  )
+    ? 2
+    : 0;
+
+  return (
+    availabilityScore * 5 +
+    roleBonus +
+    goalBonus +
+    styleBonus +
+    overlapCount(candidate.matching.skills, teamSkills)
+  );
+}
+
+function getOverflowCandidates(
+  state: AppState,
+  project: ProjectRecord,
+  volunteerOnly: boolean,
+): Array<{ user: User; matching: MatchingProfile; joinedAt: string }> {
+  return state.users
+    .filter((user) => {
+      if (
+        user.role !== "student" ||
+        user.flags.matchingRestricted ||
+        (volunteerOnly && !user.volunteer) ||
+        isUserInConfirmedProjectTeam(state, user.id, project.id) ||
+        isUserInActiveProposal(state, user.id, project.id)
+      ) {
+        return false;
+      }
+
+      return state.memberships.some(
+        (membership) =>
+          membership.userId === user.id &&
+          membership.classId === project.classId &&
+          membership.status === "active" &&
+          (!membership.projectId || membership.projectId === project.id),
+      );
+    })
+    .map((user) => {
+      const candidateMemberships = state.memberships
+        .filter(
+          (membership) =>
+            membership.userId === user.id &&
+            membership.classId === project.classId &&
+            membership.status === "active" &&
+            (!membership.projectId || membership.projectId === project.id),
+        )
+        .sort((left, right) => left.joinedAt.localeCompare(right.joinedAt));
+
+      return {
+        user,
+        matching: getMatchingProfile(state, user.id),
+        joinedAt: candidateMemberships[0]?.joinedAt || user.createdAt,
+      };
+    });
+}
+
+function assignOverflowRole(
+  project: ProjectRecord,
+  team: TeamRecord,
+  matching: MatchingProfile,
+): ProjectRole {
+  const occupied = new Set(Object.values(team.roles));
+  const preferences = [matching.rolePreference, matching.secondaryRole].filter(
+    (role): role is ProjectRole => Boolean(role),
+  );
+
+  return (
+    preferences.find((role) => !occupied.has(role)) ||
+    project.roleTemplates.find((role) => !occupied.has(role)) ||
+    preferences[0] ||
+    project.roleTemplates[0] ||
+    "Analyst"
+  );
+}
+
+function pickOverflowCandidateForTeam(
+  state: AppState,
+  team: TeamRecord,
+  candidates: Array<{ user: User; matching: MatchingProfile; joinedAt: string }>,
+  mode: "volunteer" | "forced",
+): { user: User; matching: MatchingProfile; joinedAt: string } | undefined {
+  const ranked = (requireAvailabilityOverlap: boolean) =>
+    candidates
+      .map((candidate) => ({
+        candidate,
+        score: scoreOverflowCandidate(state, team, candidate, requireAvailabilityOverlap),
+      }))
+      .filter(
+        (
+          entry,
+        ): entry is {
+          candidate: { user: User; matching: MatchingProfile; joinedAt: string };
+          score: number;
+        } => typeof entry.score === "number",
+      )
+      .sort((left, right) => {
+        const leftPriority =
+          mode === "volunteer"
+            ? new Date(left.candidate.user.volunteerEnabledAt || left.candidate.joinedAt).getTime()
+            : new Date(left.candidate.joinedAt).getTime();
+        const rightPriority =
+          mode === "volunteer"
+            ? new Date(right.candidate.user.volunteerEnabledAt || right.candidate.joinedAt).getTime()
+            : new Date(right.candidate.joinedAt).getTime();
+
+        return (
+          leftPriority - rightPriority ||
+          right.score - left.score ||
+          left.candidate.user.name.localeCompare(right.candidate.user.name)
+        );
+      });
+
+  return ranked(true)[0]?.candidate || (mode === "forced" ? ranked(false)[0]?.candidate : undefined);
+}
+
+function applyOverflowPlacement(
+  state: AppState,
+  project: ProjectRecord,
+  options: { deadlineMode?: boolean } = {},
+): AppState {
+  const setting = getProjectSetting(state, project);
+  let next = syncProjectMembershipStatuses(state, project);
+
+  if (setting.overflowTeamsAllowed <= 0) {
+    return syncOverflowProjectState(next, project, {
+      deadlineFinalized: options.deadlineMode ? true : getOverflowState(next, project).deadlineFinalized,
+    });
+  }
+
+  const overflowTeamsFilled = next.teams.filter(
+    (team) => team.projectId === project.id && team.isOverflowTeam && team.overflowMemberId,
+  ).length;
+  const openTeams = next.teams
+    .filter(
+      (team) =>
+        team.projectId === project.id &&
+        team.status === "active" &&
+        !team.isOverflowTeam &&
+        team.memberIds.length >= setting.teamSize &&
+        team.memberIds.length < setting.teamSize + 1,
+    )
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+
+  const slotsRemaining = Math.max(setting.overflowTeamsAllowed - overflowTeamsFilled, 0);
+  if (!slotsRemaining || !openTeams.length) {
+    return syncOverflowProjectState(next, project, {
+      deadlineFinalized: options.deadlineMode ? true : getOverflowState(next, project).deadlineFinalized,
+    });
+  }
+
+  let volunteerPool = getOverflowCandidates(next, project, true);
+  let forcedPool = options.deadlineMode && setting.forceOverflowAtDeadline
+    ? getOverflowCandidates(next, project, false).filter((candidate) => !candidate.user.volunteer)
+    : [];
+  const forcedOverflowMemberIds: string[] = [];
+
+  openTeams.slice(0, slotsRemaining).forEach((team) => {
+    const volunteerCandidate = pickOverflowCandidateForTeam(next, team, volunteerPool, "volunteer");
+    const forcedCandidate =
+      !volunteerCandidate && options.deadlineMode && setting.forceOverflowAtDeadline
+        ? pickOverflowCandidateForTeam(next, team, forcedPool, "forced")
+        : undefined;
+    const picked = volunteerCandidate || forcedCandidate;
+
+    if (!picked) {
+      return;
+    }
+
+    const role = assignOverflowRole(project, team, picked.matching);
+    const forced = Boolean(forcedCandidate);
+
+    next = {
+      ...next,
+      teams: next.teams.map((entry) =>
+        entry.id === team.id
+          ? {
+              ...entry,
+              memberIds: [...entry.memberIds, picked.user.id],
+              roles: {
+                ...entry.roles,
+                [picked.user.id]: role,
+              },
+              compatibilitySummary: [
+                ...entry.compatibilitySummary,
+                forced
+                  ? `${picked.user.name}: added as an overflow member after the formation deadline.`
+                  : `${picked.user.name}: added as a flex volunteer to balance class enrollment.`,
+              ],
+              maxSize: setting.teamSize + 1,
+              isOverflowTeam: true,
+              overflowMemberId: picked.user.id,
+            }
+          : entry,
+      ),
+    };
+    next = attachMembersToProject(next, [picked.user.id], project, team.id);
+    next = appendSystemTeamMessage(
+      next,
+      team.id,
+      forced
+        ? `${picked.user.name} was added as the overflow member due to the project deadline policy.`
+        : `${picked.user.name} was added as the overflow member through Flex volunteer placement.`,
+    );
+    next = pushNotification(
+      next,
+      picked.user.id,
+      forced ? "Overflow placement finalized" : "Overflow placement confirmed",
+      forced
+        ? `You were added to ${project.name} as the overflow member because the formation deadline passed.`
+        : `You were added to ${project.name} as the flex overflow member.`,
+      "/student/team",
+    );
+
+    if (forced) {
+      forcedOverflowMemberIds.push(picked.user.id);
+      forcedPool = forcedPool.filter((candidate) => candidate.user.id !== picked.user.id);
+    } else {
+      volunteerPool = volunteerPool.filter((candidate) => candidate.user.id !== picked.user.id);
+      forcedPool = forcedPool.filter((candidate) => candidate.user.id !== picked.user.id);
+    }
+  });
+
+  next = syncProjectMembershipStatuses(next, project);
+  return syncOverflowProjectState(next, project, {
+    forcedOverflowMemberIds,
+    deadlineFinalized: options.deadlineMode ? true : getOverflowState(next, project).deadlineFinalized,
+  });
+}
+
+function finalizeOverflowDeadlines(state: AppState): AppState {
+  const now = Date.now();
+
+  return state.projects.reduce((next, project) => {
+    const setting = getProjectSetting(next, project);
+    const overflow = getOverflowState(next, project);
+    if (
+      overflow.deadlineFinalized ||
+      now < new Date(setting.formationDeadline).getTime()
+    ) {
+      return next;
+    }
+
+    return applyOverflowPlacement(next, project, { deadlineMode: true });
+  }, state);
 }
 
 function buildStudentDefaults(user: User): UserProfile {
@@ -298,10 +1160,628 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const commit = (updater: (previous: AppState) => AppState) => {
     setState((previous) => {
       const next = updater(previous);
-      persistState(next);
+      if (next !== previous) {
+        persistState(next);
+      }
       return next;
     });
   };
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      commit((previous) => expireActiveProposals(previous));
+    }, 5000);
+
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    commit((previous) => finalizeOverflowDeadlines(previous));
+
+    const timer = window.setInterval(() => {
+      commit((previous) => finalizeOverflowDeadlines(previous));
+    }, 60000);
+
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const resolveDebugUser = (liveState: AppState) => {
+      const auth = liveState.auth;
+      if (!auth) {
+        return { ok: false as const, message: "Login first." };
+      }
+
+      const user = liveState.users.find((entry) => entry.id === auth.userId);
+      if (!user) {
+        return { ok: false as const, message: "The current user could not be resolved." };
+      }
+
+      return { ok: true as const, user };
+    };
+
+    const resolveDebugProject = (
+      liveState: AppState,
+      user: User | undefined,
+      projectId?: string,
+    ) => {
+      const project =
+        (projectId
+          ? liveState.projects.find((entry) => entry.id === projectId)
+          : user?.role === "student"
+            ? resolveCurrentProject(liveState, user.id, activeProjectId)
+            : liveState.projects[0]) || undefined;
+
+      if (!project) {
+        return { ok: false as const, message: "No project could be resolved for this debug command." };
+      }
+
+      return { ok: true as const, project };
+    };
+
+    const resolveDebugProposal = (
+      liveState: AppState,
+      user: User | undefined,
+      proposalId?: string,
+    ) => {
+      const proposal =
+        (proposalId
+          ? getProposalById(liveState, proposalId)
+          : user?.role === "student"
+            ? liveState.teamProposals.find(
+                (entry) =>
+                  entry.projectId ===
+                    resolveCurrentProject(liveState, user.id, activeProjectId)?.id &&
+                  isProposalActive(entry),
+              )
+            : liveState.teamProposals.find((entry) => isProposalActive(entry))) || undefined;
+
+      if (!proposal) {
+        return { ok: false as const, message: "No matching proposal was found." };
+      }
+
+      return { ok: true as const, proposal };
+    };
+
+    window.gfDebug = {
+      help: () => ({
+        demoAccounts: "List all seeded student/admin emails and the shared demo password.",
+        inspectSession: "Inspect the current logged-in account, active project, and active team.",
+        inspectProject: "Inspect project settings, overflow state, teams, unmatched members, and proposals.",
+        forceAiProposal:
+          "Generate an AI suggestion from the current student's matching profile and immediately create a proposal.",
+        acceptAllPendingProposal:
+          "Mark every pending member on a proposal as accepted and confirm the team if possible.",
+        declinePendingProposal:
+          "Simulate one pending member declining a proposal so refill behavior can be demonstrated.",
+        forceQueueMatch: "Resolve the current student's Lucky Draw queue session immediately.",
+        inspectQueue: "Inspect the current student's queue session for the selected project.",
+        finalizeOverflow:
+          "Force overflow placement/finalization immediately for the resolved project.",
+        setVolunteer:
+          "Toggle Flex volunteer for the current logged-in student account.",
+        resetDemoData:
+          "Clear local demo state, reseed the app, and reset the active project selection.",
+      }),
+      demoAccounts: () => {
+        const liveState = stateRef.current;
+        return {
+          password: DEMO_ACCOUNT_PASSWORD,
+          students: liveState.users
+            .filter((user) => user.role === "student")
+            .map((user) => user.email)
+            .sort((left, right) => left.localeCompare(right)),
+          admins: liveState.users
+            .filter((user) => user.role === "admin")
+            .map((user) => user.email)
+            .sort((left, right) => left.localeCompare(right)),
+        };
+      },
+      inspectSession: () => {
+        const liveState = stateRef.current;
+        const resolvedUser = resolveDebugUser(liveState);
+        if (!resolvedUser.ok) {
+          return resolvedUser;
+        }
+
+        const project =
+          resolvedUser.user.role === "student"
+            ? resolveCurrentProject(liveState, resolvedUser.user.id, activeProjectId)
+            : undefined;
+        const team =
+          resolvedUser.user.role === "student" && project
+            ? resolveCurrentTeam(liveState, resolvedUser.user.id, project.id)
+            : undefined;
+
+        return {
+          ok: true,
+          role: resolvedUser.user.role,
+          userId: resolvedUser.user.id,
+          name: resolvedUser.user.name,
+          email: resolvedUser.user.email,
+          activeProjectId: project?.id,
+          activeProjectName: project?.name,
+          activeTeamId: team?.id,
+          volunteer: resolvedUser.user.volunteer,
+        };
+      },
+      inspectProject: (projectId) => {
+        const liveState = stateRef.current;
+        const resolvedUser = resolveDebugUser(liveState);
+        const resolvedProject = resolveDebugProject(
+          liveState,
+          resolvedUser.ok ? resolvedUser.user : undefined,
+          projectId,
+        );
+        if (!resolvedProject.ok) {
+          return resolvedProject;
+        }
+
+        const project = resolvedProject.project;
+        const setting = getProjectSetting(liveState, project);
+        const overflow = getOverflowState(liveState, project);
+        const memberships = liveState.memberships.filter(
+          (membership) =>
+            membership.projectId === project.id && membership.status === "active",
+        );
+
+        return {
+          ok: true,
+          projectId: project.id,
+          projectName: project.name,
+          joinCode: project.joinCode,
+          teamSize: setting.teamSize,
+          overflowTeamsAllowed: setting.overflowTeamsAllowed,
+          formationDeadline: setting.formationDeadline,
+          forceOverflowAtDeadline: setting.forceOverflowAtDeadline,
+          overflow,
+          confirmedTeams: liveState.teams.filter((team) => team.projectId === project.id).map((team) => ({
+            id: team.id,
+            members: team.memberIds,
+            isOverflowTeam: team.isOverflowTeam,
+            overflowMemberId: team.overflowMemberId,
+          })),
+          unmatchedMemberIds: unique(
+            memberships
+              .filter((membership) => membership.matchingStatus !== "confirmed")
+              .map((membership) => membership.userId),
+          ),
+          proposals: liveState.teamProposals
+            .filter((proposal) => proposal.projectId === project.id)
+            .map((proposal) => ({
+              id: proposal.id,
+              status: proposal.status,
+              memberIds: proposal.memberIds,
+              slotsNeeded: proposal.slotsNeeded,
+            })),
+        };
+      },
+      forceAiProposal: (projectId) => {
+        const liveState = stateRef.current;
+        const resolvedUser = resolveDebugUser(liveState);
+        if (!resolvedUser.ok) {
+          return resolvedUser;
+        }
+        if (resolvedUser.user.role !== "student") {
+          return { ok: false, message: "This debug command only works for student sessions." };
+        }
+
+        const resolvedProject = resolveDebugProject(liveState, resolvedUser.user, projectId);
+        if (!resolvedProject.ok) {
+          return resolvedProject;
+        }
+
+        const project = resolvedProject.project;
+        if (isUserInConfirmedProjectTeam(liveState, resolvedUser.user.id, project.id)) {
+          return { ok: false, message: "This student is already in a confirmed team for the project." };
+        }
+
+        const activeProposal = liveState.teamProposals.find(
+          (proposal) =>
+            proposal.projectId === project.id &&
+            proposal.createdByUserId === resolvedUser.user.id &&
+            isProposalActive(proposal),
+        );
+        if (activeProposal) {
+          return {
+            ok: true,
+            message: "An active proposal already exists for this student and project.",
+            proposalId: activeProposal.id,
+          };
+        }
+
+        const matching = getMatchingProfile(liveState, resolvedUser.user.id);
+        const answers: AiAnswers = {
+          rolePreference: matching.rolePreference,
+          skills: matching.skills,
+          availability: matching.availability,
+          goalLevel: matching.goalLevel,
+          workingStyle: matching.workingStyle,
+        };
+        const suggestion = buildAiSuggestion(
+          liveState,
+          project,
+          resolvedUser.user,
+          answers,
+          0,
+        );
+
+        if (!suggestion) {
+          return { ok: false, message: "No eligible AI roster is available for this project." };
+        }
+
+        const setting = getProjectSetting(liveState, project);
+        const proposalId = createId("proposal");
+        const createdAt = new Date().toISOString();
+        const memberIds = [...new Set([resolvedUser.user.id, ...suggestion.candidateIds])];
+        const proposal: TeamProposal = {
+          id: proposalId,
+          projectId: project.id,
+          createdByUserId: resolvedUser.user.id,
+          createdAt,
+          expiresAt: new Date(
+            Date.now() + setting.proposalExpiryMinutes * 60 * 1000,
+          ).toISOString(),
+          teamSize: setting.teamSize,
+          memberIds,
+          memberStatuses: Object.fromEntries(
+            memberIds.map((userId) => [userId, userId === resolvedUser.user.id ? "accepted" : "pending"]),
+          ),
+          roleAssignments: suggestion.roleAssignments,
+          reasons: suggestion.reasons,
+          compatibilitySummary: buildProposalCompatibilitySummary(
+            liveState,
+            memberIds,
+            suggestion.roleAssignments,
+          ),
+          status: "pending",
+          slotsNeeded: Math.max(setting.teamSize - memberIds.length, 0),
+          lockedAcceptedMemberIds: [resolvedUser.user.id],
+        };
+
+        let next = upsertMatchingProfile(
+          {
+            ...liveState,
+            aiSessions: [
+              {
+                id: createId("aisession"),
+                userId: resolvedUser.user.id,
+                projectId: project.id,
+                answers,
+                lastResult: suggestion,
+                rematchCount: 0,
+                history: [suggestion],
+                updatedAt: createdAt,
+              },
+              ...liveState.aiSessions.filter(
+                (session) =>
+                  !(session.userId === resolvedUser.user.id && session.projectId === project.id),
+              ),
+            ],
+            teamProposals: [proposal, ...liveState.teamProposals],
+          },
+          resolvedUser.user.id,
+          answers,
+        );
+        next = ensureProjectMemberships(next, memberIds, project, "proposed");
+
+        memberIds
+          .filter((userId) => userId !== resolvedUser.user.id)
+          .forEach((memberId) => {
+            next = pushNotification(
+              next,
+              memberId,
+              "Team proposal invite",
+              `${resolvedUser.user.name} proposed a team for ${project.name}. Review the roster and respond.`,
+              `/student/proposals/${proposalId}`,
+              "PROPOSAL_INVITE",
+            );
+          });
+
+        next = reconcileProposal(next, proposalId);
+        commit(() => next);
+
+        return {
+          ok: true,
+          message: `AI proposal created for ${project.name}.`,
+          proposalId,
+        };
+      },
+      acceptAllPendingProposal: (proposalId) => {
+        const liveState = stateRef.current;
+        const resolvedUser = resolveDebugUser(liveState);
+        const resolvedProposal = resolveDebugProposal(
+          liveState,
+          resolvedUser.ok ? resolvedUser.user : undefined,
+          proposalId,
+        );
+        if (!resolvedProposal.ok) {
+          return resolvedProposal;
+        }
+
+        const pendingIds = Object.entries(resolvedProposal.proposal.memberStatuses)
+          .filter(([, status]) => status === "pending")
+          .map(([userId]) => userId);
+        if (!pendingIds.length) {
+          return {
+            ok: true,
+            message: "No pending members remain on this proposal.",
+            proposalId: resolvedProposal.proposal.id,
+            teamId: resolvedProposal.proposal.finalTeamId,
+          };
+        }
+
+        const nextProposal: TeamProposal = {
+          ...resolvedProposal.proposal,
+          memberStatuses: {
+            ...resolvedProposal.proposal.memberStatuses,
+            ...Object.fromEntries(pendingIds.map((userId) => [userId, "accepted"])),
+          },
+          lockedAcceptedMemberIds: unique([
+            ...resolvedProposal.proposal.lockedAcceptedMemberIds,
+            ...pendingIds,
+          ]),
+          status: "pending",
+        };
+
+        let next = replaceProposal(liveState, nextProposal);
+        next = reconcileProposal(next, resolvedProposal.proposal.id);
+        const finalProposal = getProposalById(next, resolvedProposal.proposal.id);
+        commit(() => next);
+
+        return {
+          ok: true,
+          message: `Accepted ${pendingIds.length} pending member${pendingIds.length === 1 ? "" : "s"}.`,
+          proposalId: resolvedProposal.proposal.id,
+          teamId: finalProposal?.finalTeamId,
+        };
+      },
+      declinePendingProposal: (proposalId, userId) => {
+        const liveState = stateRef.current;
+        const resolvedUser = resolveDebugUser(liveState);
+        const resolvedProposal = resolveDebugProposal(
+          liveState,
+          resolvedUser.ok ? resolvedUser.user : undefined,
+          proposalId,
+        );
+        if (!resolvedProposal.ok) {
+          return resolvedProposal;
+        }
+
+        const project = liveState.projects.find(
+          (entry) => entry.id === resolvedProposal.proposal.projectId,
+        );
+        if (!project) {
+          return { ok: false, message: "Project not found for this proposal." };
+        }
+
+        const targetId =
+          userId ||
+          resolvedProposal.proposal.memberIds.find(
+            (memberId) =>
+              resolvedProposal.proposal.memberStatuses[memberId] === "pending",
+          );
+        if (!targetId || resolvedProposal.proposal.memberStatuses[targetId] !== "pending") {
+          return { ok: false, message: "No pending proposal member could be declined." };
+        }
+
+        const targetUser = liveState.users.find((entry) => entry.id === targetId);
+        const nextProposal: TeamProposal = {
+          ...resolvedProposal.proposal,
+          memberIds: resolvedProposal.proposal.memberIds.filter((memberId) => memberId !== targetId),
+          memberStatuses: {
+            ...resolvedProposal.proposal.memberStatuses,
+            [targetId]: "declined",
+          },
+          lockedAcceptedMemberIds: resolvedProposal.proposal.lockedAcceptedMemberIds.filter(
+            (memberId) => memberId !== targetId,
+          ),
+          status: "refilling",
+        };
+
+        let next = replaceProposal(liveState, nextProposal);
+        const notifiedUserIds = unique([
+          resolvedProposal.proposal.createdByUserId,
+          ...nextProposal.lockedAcceptedMemberIds,
+        ]).filter((memberId) => memberId !== targetId);
+
+        next = notifyProposalMembers(
+          next,
+          notifiedUserIds,
+          "Proposal declined",
+          `${targetUser?.name || "A pending member"} declined the team proposal for ${project.name}. We’ll refill the missing slot.`,
+          `/student/proposals/${resolvedProposal.proposal.id}`,
+          "PROPOSAL_DECLINED",
+        );
+        next = reconcileProposal(next, resolvedProposal.proposal.id);
+        commit(() => next);
+
+        return {
+          ok: true,
+          message: `${targetUser?.name || targetId} was set to declined and refill logic ran.`,
+          proposalId: resolvedProposal.proposal.id,
+        };
+      },
+      forceQueueMatch: (projectId) => {
+        const liveState = stateRef.current;
+        const resolvedUser = resolveDebugUser(liveState);
+        if (!resolvedUser.ok) {
+          return resolvedUser;
+        }
+        if (resolvedUser.user.role !== "student") {
+          return { ok: false, message: "This debug command only works for student sessions." };
+        }
+
+        const resolvedProject = resolveDebugProject(liveState, resolvedUser.user, projectId);
+        if (!resolvedProject.ok) {
+          return resolvedProject;
+        }
+        const project = resolvedProject.project;
+
+        const queue = getOrCreateQueueSession(liveState, resolvedUser.user.id, project.id);
+        if (!queue.primaryRole || !queue.constraints) {
+          return { ok: false, message: "Complete the Lucky Draw role and constraint steps first." };
+        }
+
+        const result = buildQueueSuggestion(
+          liveState,
+          project,
+          resolvedUser.user,
+          queue.primaryRole,
+          queue.secondaryRole,
+          queue.constraints,
+          queue.requeueCount,
+        );
+        if (!result) {
+          return { ok: false, message: "No eligible queue roster is available for this project." };
+        }
+
+        commit((previous) => ({
+          ...previous,
+          queueSessions: previous.queueSessions.some((item) => item.id === queue.id)
+            ? previous.queueSessions.map((item) =>
+                item.id === queue.id
+                  ? {
+                      ...item,
+                      lastMatch: result,
+                      inQueue: false,
+                      startedAt: undefined,
+                      updatedAt: new Date().toISOString(),
+                    }
+                  : item,
+              )
+            : [
+                {
+                  ...queue,
+                  lastMatch: result,
+                  inQueue: false,
+                  startedAt: undefined,
+                  updatedAt: new Date().toISOString(),
+                },
+                ...previous.queueSessions,
+              ],
+        }));
+
+        return {
+          ok: true,
+          message: `Queue match forced for ${project.name}. Open /student/match/queue/match to review it.`,
+        };
+      },
+      inspectQueue: (projectId) => {
+        const liveState = stateRef.current;
+        const resolvedUser = resolveDebugUser(liveState);
+        if (!resolvedUser.ok) {
+          return resolvedUser;
+        }
+        if (resolvedUser.user.role !== "student") {
+          return { ok: false, message: "This debug command only works for student sessions." };
+        }
+
+        const resolvedProject = resolveDebugProject(liveState, resolvedUser.user, projectId);
+        if (!resolvedProject.ok) {
+          return resolvedProject;
+        }
+        const project = resolvedProject.project;
+
+        const queue = liveState.queueSessions.find(
+          (session) => session.userId === resolvedUser.user.id && session.projectId === project.id,
+        );
+
+        return {
+          ok: true,
+          message: queue
+            ? `Queue session found for ${project.name}.`
+            : `No queue session exists yet for ${project.name}.`,
+          queue,
+        };
+      },
+      finalizeOverflow: (projectId) => {
+        const liveState = stateRef.current;
+        const resolvedUser = resolveDebugUser(liveState);
+        const resolvedProject = resolveDebugProject(
+          liveState,
+          resolvedUser.ok ? resolvedUser.user : undefined,
+          projectId,
+        );
+        if (!resolvedProject.ok) {
+          return resolvedProject;
+        }
+
+        const next = applyOverflowPlacement(liveState, resolvedProject.project, {
+          deadlineMode: true,
+        });
+        const overflow = getOverflowState(next, resolvedProject.project);
+        commit(() => next);
+
+        return {
+          ok: true,
+          message: `Overflow finalization ran for ${resolvedProject.project.name}.`,
+          overflow,
+        };
+      },
+      setVolunteer: (enabled) => {
+        const liveState = stateRef.current;
+        const resolvedUser = resolveDebugUser(liveState);
+        if (!resolvedUser.ok) {
+          return resolvedUser;
+        }
+        if (resolvedUser.user.role !== "student") {
+          return { ok: false, message: "This debug command only works for student sessions." };
+        }
+
+        let next: AppState = {
+          ...liveState,
+          users: liveState.users.map((user) =>
+            user.id === resolvedUser.user.id
+              ? {
+                  ...user,
+                  volunteer: enabled,
+                  volunteerEnabledAt: enabled
+                    ? user.volunteerEnabledAt || new Date().toISOString()
+                    : undefined,
+                }
+              : user,
+          ),
+        };
+
+        if (enabled) {
+          resolveStudentProjects(next, resolvedUser.user.id).forEach((project) => {
+            next = applyOverflowPlacement(next, project);
+          });
+        }
+
+        commit(() => next);
+        return {
+          ok: true,
+          message: `Flex volunteer is now ${enabled ? "enabled" : "disabled"} for ${resolvedUser.user.name}.`,
+        };
+      },
+      resetDemoData: () => {
+        Object.keys(window.localStorage)
+          .filter((key) => key.startsWith("gf_"))
+          .forEach((key) => window.localStorage.removeItem(key));
+        window.sessionStorage.removeItem(ACTIVE_PROJECT_KEY);
+        const resetState = loadState();
+        stateRef.current = resetState;
+        setState(resetState);
+        setActiveProjectId(undefined);
+        writeActiveProjectId(undefined);
+
+        return {
+          ok: true,
+          message: "Demo data reset to the seeded default state.",
+        };
+      },
+    };
+
+    return () => {
+      delete window.gfDebug;
+    };
+  }, [activeProjectId]);
 
   const currentUser = state.auth
     ? state.users.find((user) => user.id === state.auth?.userId)
@@ -440,21 +1920,53 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      commit((previous) => ({
-        ...previous,
-        users: previous.users.map((user) =>
-          user.id === currentUser.id
-            ? {
-                ...user,
-                ...payload,
-                profile: {
-                  ...user.profile,
-                  ...payload.profile,
-                },
-              }
-            : user,
-        ),
-      }));
+      commit((previous) => {
+        const enablingVolunteer =
+          currentUser.role === "student" && payload.volunteer === true && !currentUser.volunteer;
+
+        let next: AppState = {
+          ...previous,
+          users: previous.users.map((user) =>
+            user.id === currentUser.id
+              ? {
+                  ...user,
+                  ...payload,
+                  volunteer:
+                    typeof payload.volunteer === "boolean" ? payload.volunteer : user.volunteer,
+                  volunteerEnabledAt:
+                    typeof payload.volunteer === "boolean"
+                      ? payload.volunteer
+                        ? user.volunteer
+                          ? user.volunteerEnabledAt || new Date().toISOString()
+                          : new Date().toISOString()
+                        : undefined
+                      : user.volunteerEnabledAt,
+                  profile: {
+                    ...user.profile,
+                    ...payload.profile,
+                  },
+                }
+              : user,
+          ),
+        };
+
+        if (enablingVolunteer) {
+          previous.projects
+            .filter((project) =>
+              previous.memberships.some(
+                (membership) =>
+                  membership.userId === currentUser.id &&
+                  membership.projectId === project.id &&
+                  membership.status === "active",
+              ),
+            )
+            .forEach((project) => {
+              next = applyOverflowPlacement(next, project);
+            });
+        }
+
+        return next;
+      });
     },
     joinProject(joinCode) {
       if (!currentUser || currentUser.role !== "student") {
@@ -502,6 +2014,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               classId: project.classId,
               projectId: project.id,
               status: "active" as const,
+              matchingStatus: "unmatched" as const,
               joinedAt: new Date().toISOString(),
             },
             ...previous.memberships,
@@ -527,6 +2040,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
               "/admin/students",
             );
           });
+
+        if (currentUser.volunteer) {
+          next = applyOverflowPlacement(next, project);
+        }
 
         return next;
       });
@@ -561,11 +2078,80 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     createProject(classId, payload) {
       const project = createProjectRecord(classId, payload);
-      commit((previous) => ({
-        ...previous,
-        projects: [project, ...previous.projects],
-      }));
+      const formationDeadline = toIsoDateTime(payload.formationDeadline, project.deadline);
+      commit((previous) =>
+        replaceOverflowState(
+          {
+            ...previous,
+            projectSettings: [
+              buildProjectSetting(
+                project.id,
+                project.teamSize,
+                undefined,
+                payload.overflowTeamsAllowed,
+                formationDeadline,
+                payload.forceOverflowAtDeadline,
+              ),
+              ...previous.projectSettings.filter((setting) => setting.projectId !== project.id),
+            ],
+            projects: [project, ...previous.projects],
+          },
+          {
+            projectId: project.id,
+            overflowTeamsAllowed: payload.overflowTeamsAllowed,
+            overflowSlotsNeeded: Math.max(payload.overflowTeamsAllowed, 0),
+            overflowSlotsFilled: 0,
+            overflowMemberIds: [],
+            forcedOverflowMemberIds: [],
+            deadlineFinalized: false,
+          },
+        ),
+      );
       return project;
+    },
+    updateProjectSettings(payload) {
+      if (!currentUser || currentUser.role !== "admin") {
+        return { ok: false, message: "Only admins can update project settings." };
+      }
+
+      const project = stateRef.current.projects.find((entry) => entry.id === payload.projectId);
+      if (!project) {
+        return { ok: false, message: "Project not found." };
+      }
+
+      const formationDeadline = toIsoDateTime(
+        payload.formationDeadline,
+        getProjectSetting(stateRef.current, project).formationDeadline,
+      );
+
+      commit((previous) => {
+        let next: AppState = {
+          ...previous,
+          projectSettings: [
+            buildProjectSetting(
+              project.id,
+              project.teamSize,
+              getProjectSetting(previous, project).proposalExpiryMinutes,
+              payload.overflowTeamsAllowed,
+              formationDeadline,
+              payload.forceOverflowAtDeadline,
+            ),
+            ...previous.projectSettings.filter((setting) => setting.projectId !== project.id),
+          ],
+        };
+
+        next = syncOverflowProjectState(next, project, { deadlineFinalized: false });
+        if (
+          payload.forceOverflowAtDeadline &&
+          Date.now() >= new Date(formationDeadline).getTime()
+        ) {
+          next = applyOverflowPlacement(next, project, { deadlineMode: true });
+        }
+
+        return next;
+      });
+
+      return { ok: true, message: "Project policy updated." };
     },
     adminCreateStudent(payload) {
       if (!currentUser || currentUser.role !== "admin") {
@@ -704,7 +2290,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
                   ? {
                       ...membership,
                       status: "active",
+                      matchingStatus: "unmatched",
                       teamId: undefined,
+                      confirmedTeamId: undefined,
                       joinedAt: new Date().toISOString(),
                     }
                   : membership,
@@ -715,6 +2303,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
                   userId,
                   classId,
                   status: "active",
+                  matchingStatus: "unmatched",
                   joinedAt: new Date().toISOString(),
                 },
                 ...previous.memberships,
@@ -764,7 +2353,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
             membership.userId === userId &&
             membership.classId === classId &&
             membership.status === "active"
-              ? { ...membership, status: "removed", teamId: undefined }
+              ? {
+                  ...membership,
+                  status: "removed",
+                  matchingStatus: "unmatched",
+                  teamId: undefined,
+                  confirmedTeamId: undefined,
+                }
               : membership,
           ),
           teams: previous.teams.map((team) =>
@@ -772,6 +2367,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
               ? {
                   ...team,
                   memberIds: team.memberIds.filter((memberId) => memberId !== userId),
+                  roles: Object.fromEntries(
+                    Object.entries(team.roles).filter(([memberId]) => memberId !== userId),
+                  ),
+                  maxSize:
+                    team.overflowMemberId === userId
+                      ? Math.max(team.memberIds.length - 1, team.maxSize - 1)
+                      : team.maxSize,
+                  isOverflowTeam:
+                    team.overflowMemberId === userId ? false : team.isOverflowTeam,
+                  overflowMemberId:
+                    team.overflowMemberId === userId ? undefined : team.overflowMemberId,
                   status: "paused",
                 }
               : team,
@@ -796,6 +2402,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
           `An instructor removed you from ${classRecord?.name || "the class"}.`,
           "/student/notifications",
         );
+
+        affectedProjectIds.forEach((projectId) => {
+          const project = previous.projects.find((entry) => entry.id === projectId);
+          if (project) {
+            next = syncProjectMembershipStatuses(next, project);
+            next = syncOverflowProjectState(next, project);
+          }
+        });
 
         return next;
       });
@@ -897,54 +2511,209 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       return result;
     },
-    acceptAiMatch() {
+    proposeAiTeam() {
       if (!currentUser || !currentProject) {
-        return undefined;
+        return { ok: false, message: "Join a project before proposing a team." };
       }
 
-      const session = stateRef.current.aiSessions.find(
+      const liveState = stateRef.current;
+      const session = liveState.aiSessions.find(
         (entry) => entry.userId === currentUser.id && entry.projectId === currentProject.id,
       );
       if (!session?.lastResult) {
-        return undefined;
+        return { ok: false, message: "Generate an AI match first." };
       }
 
-      const memberIds = [currentUser.id, ...session.lastResult.candidateIds];
-      const artifacts = buildTeamArtifacts(
-        currentProject,
-        "ai",
+      if (isUserInConfirmedProjectTeam(liveState, currentUser.id, currentProject.id)) {
+        return { ok: false, message: "You are already in a confirmed team for this project." };
+      }
+
+      if (hasActiveProposalForUser(liveState, currentUser.id, currentProject.id)) {
+        return { ok: false, message: "You already have an active proposal in this project." };
+      }
+
+      const memberIds = [...new Set([currentUser.id, ...session.lastResult.candidateIds])];
+      const invalidCandidate = memberIds.find(
+        (userId) =>
+          userId !== currentUser.id &&
+          (isUserInConfirmedProjectTeam(liveState, userId, currentProject.id) ||
+            isUserInActiveProposal(liveState, userId, currentProject.id)),
+      );
+      if (invalidCandidate) {
+        return {
+          ok: false,
+          message: "One of the suggested classmates already joined a confirmed team. Rematch and try again.",
+        };
+      }
+
+      const setting = getProjectSetting(liveState, currentProject);
+      const createdAt = new Date().toISOString();
+      const proposalId = createId("proposal");
+      const proposal: TeamProposal = {
+        id: proposalId,
+        projectId: currentProject.id,
+        createdByUserId: currentUser.id,
+        createdAt,
+        expiresAt: new Date(
+          Date.now() + setting.proposalExpiryMinutes * 60 * 1000,
+        ).toISOString(),
+        teamSize: setting.teamSize,
         memberIds,
-        session.lastResult.roleAssignments,
-        session.lastResult.compatibilitySummary,
+        memberStatuses: Object.fromEntries(
+          memberIds.map((userId) => [userId, userId === currentUser.id ? "accepted" : "pending"]),
+        ),
+        roleAssignments: session.lastResult.roleAssignments,
+        reasons: session.lastResult.reasons,
+        compatibilitySummary: buildProposalCompatibilitySummary(
+          liveState,
+          memberIds,
+          session.lastResult.roleAssignments,
+        ),
+        status: "pending",
+        slotsNeeded: Math.max(setting.teamSize - memberIds.length, 0),
+        lockedAcceptedMemberIds: [currentUser.id],
+      };
+
+      let nextState = ensureProjectMemberships(
+        {
+          ...liveState,
+          teamProposals: [proposal, ...liveState.teamProposals],
+        },
+        memberIds,
+        currentProject,
+        "proposed",
       );
 
-      commit((previous) => {
-        let next = attachMembersToProject(
-          {
-            ...previous,
-            teams: [artifacts.team, ...previous.teams],
-            teamChat: [artifacts.chatBucket, ...previous.teamChat],
-            teamTasks: [artifacts.taskBucket, ...previous.teamTasks],
-          },
-          memberIds,
-          currentProject,
-          artifacts.team.id,
-        );
-
-        memberIds.forEach((memberId) => {
-          next = pushNotification(
-            next,
+      memberIds
+        .filter((userId) => userId !== currentUser.id)
+        .forEach((memberId) => {
+          nextState = pushNotification(
+            nextState,
             memberId,
-            "AI team confirmed",
-            `Your team is active in ${currentProject.name}.`,
-            "/student/team",
+            "Team proposal invite",
+            `${currentUser.name} proposed a team for ${currentProject.name}. Review the roster and respond.`,
+            `/student/proposals/${proposalId}`,
+            "PROPOSAL_INVITE",
           );
         });
 
-        return next;
-      });
+      nextState = reconcileProposal(nextState, proposalId);
+      commit(() => nextState);
 
-      return artifacts.team.id;
+      return { ok: true, message: "Team proposal sent.", proposalId };
+    },
+    respondToProposal(proposalId, decision) {
+      if (!currentUser) {
+        return { ok: false, message: "You must be logged in to respond.", proposalId };
+      }
+
+      const liveState = expireActiveProposals(stateRef.current);
+      const proposal = getProposalById(liveState, proposalId);
+      if (!proposal) {
+        return { ok: false, message: "Proposal not found.", proposalId };
+      }
+
+      if (!proposal.memberStatuses[currentUser.id] && proposal.createdByUserId !== currentUser.id) {
+        return { ok: false, message: "This proposal is not assigned to your account.", proposalId };
+      }
+
+      if (!isProposalActive(proposal)) {
+        return {
+          ok: false,
+          message:
+            proposal.status === "confirmed"
+              ? "This proposal is already confirmed."
+              : "This proposal is no longer active.",
+          proposalId,
+          teamId: proposal.finalTeamId,
+        };
+      }
+
+      if (new Date().getTime() > new Date(proposal.expiresAt).getTime()) {
+        const expiredState = expireProposal(
+          liveState,
+          proposal,
+          liveState.projects.find((entry) => entry.id === proposal.projectId),
+        );
+        commit(() => expiredState);
+        return { ok: false, message: "This proposal expired before you responded.", proposalId };
+      }
+
+      const project = liveState.projects.find((entry) => entry.id === proposal.projectId);
+      if (!project) {
+        return { ok: false, message: "Project not found.", proposalId };
+      }
+
+      if (decision === "accepted" && isUserInConfirmedProjectTeam(liveState, currentUser.id, project.id)) {
+        return { ok: false, message: "You are already in a confirmed team for this project.", proposalId };
+      }
+
+      if (proposal.memberStatuses[currentUser.id] === decision) {
+        return {
+          ok: true,
+          message: decision === "accepted" ? "Already accepted." : "Already declined.",
+          proposalId,
+          teamId: proposal.finalTeamId,
+        };
+      }
+
+      const nextProposal: TeamProposal = {
+        ...proposal,
+        memberIds:
+          decision === "declined"
+            ? proposal.memberIds.filter((userId) => userId !== currentUser.id)
+            : proposal.memberIds,
+        memberStatuses: {
+          ...proposal.memberStatuses,
+          [currentUser.id]: decision,
+        },
+        lockedAcceptedMemberIds:
+          decision === "accepted"
+            ? [...new Set([...proposal.lockedAcceptedMemberIds, currentUser.id])]
+            : proposal.lockedAcceptedMemberIds.filter((userId) => userId !== currentUser.id),
+        status: decision === "declined" ? "refilling" : proposal.status,
+      };
+
+      let nextState = replaceProposal(liveState, nextProposal);
+      const notifiedUserIds = [...new Set([proposal.createdByUserId, ...nextProposal.lockedAcceptedMemberIds])].filter(
+        (userId) => userId !== currentUser.id,
+      );
+
+      if (decision === "accepted") {
+        nextState = notifyProposalMembers(
+          nextState,
+          notifiedUserIds,
+          "Proposal accepted",
+          `${currentUser.name} accepted the team proposal for ${project.name}.`,
+          `/student/proposals/${proposalId}`,
+          "PROPOSAL_ACCEPTED",
+        );
+      } else {
+        nextState = notifyProposalMembers(
+          nextState,
+          notifiedUserIds,
+          "Proposal declined",
+          `${currentUser.name} declined the team proposal for ${project.name}. We’ll refill the missing slot.`,
+          `/student/proposals/${proposalId}`,
+          "PROPOSAL_DECLINED",
+        );
+      }
+
+      nextState = reconcileProposal(nextState, proposalId);
+      const finalProposal = getProposalById(nextState, proposalId);
+      commit(() => nextState);
+
+      return {
+        ok: true,
+        message:
+          decision === "accepted"
+            ? finalProposal?.status === "confirmed"
+              ? "Proposal confirmed."
+              : "You accepted the proposal."
+            : "You declined the proposal.",
+        proposalId,
+        teamId: finalProposal?.finalTeamId,
+      };
     },
     saveQueueRoles(primaryRole, secondaryRole) {
       if (!currentUser || !currentProject) {
@@ -1150,6 +2919,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
           );
         });
 
+        next = {
+          ...next,
+          queueSessions: next.queueSessions.map((entry) =>
+            entry.userId === currentUser.id && entry.projectId === currentProject.id
+              ? {
+                  ...entry,
+                  inQueue: false,
+                  startedAt: undefined,
+                  lastMatch: undefined,
+                  updatedAt: new Date().toISOString(),
+                }
+              : entry,
+          ),
+        };
+        next = syncProjectMembershipStatuses(next, currentProject);
+        next = applyOverflowPlacement(next, currentProject);
+
         return next;
       });
 
@@ -1213,15 +2999,97 @@ export function AppProvider({ children }: { children: ReactNode }) {
         ),
       }));
     },
-    setMeetingTime(meetingTime) {
-      if (!currentTeam) {
+    addMeetingOption(startsAt) {
+      if (!currentUser || !currentTeam) {
+        return { ok: false, message: "Join a team first." };
+      }
+
+      const value = startsAt.trim();
+      if (!value) {
+        return { ok: false, message: "Choose a meeting time first." };
+      }
+
+      const existingOption = stateRef.current.teams
+        .find((team) => team.id === currentTeam.id)
+        ?.meetingOptions?.find((option) => option.startsAt === value);
+
+      commit((previous) => ({
+        ...previous,
+        teams: previous.teams.map((team) => {
+          if (team.id !== currentTeam.id) {
+            return team;
+          }
+
+          const options = team.meetingOptions || [];
+          if (existingOption) {
+            return {
+              ...team,
+              meetingOptions: options.map((option) => {
+                const withoutCurrentUser = option.voterIds.filter((userId) => userId !== currentUser.id);
+                return option.id === existingOption.id
+                  ? {
+                      ...option,
+                      voterIds: [...withoutCurrentUser, currentUser.id],
+                    }
+                  : {
+                      ...option,
+                      voterIds: withoutCurrentUser,
+                    };
+              }),
+            };
+          }
+
+          return {
+            ...team,
+            meetingOptions: [
+              ...options.map((option) => ({
+                ...option,
+                voterIds: option.voterIds.filter((userId) => userId !== currentUser.id),
+              })),
+              {
+                id: createId("meeting"),
+                startsAt: value,
+                proposedBy: currentUser.id,
+                voterIds: [currentUser.id],
+                createdAt: new Date().toISOString(),
+              },
+            ],
+          };
+        }),
+      }));
+
+      return {
+        ok: true,
+        message: existingOption
+          ? "That time already existed, so your vote moved there."
+          : "Meeting option added.",
+      };
+    },
+    voteMeetingOption(optionId) {
+      if (!currentUser || !currentTeam) {
         return;
       }
 
       commit((previous) => ({
         ...previous,
         teams: previous.teams.map((team) =>
-          team.id === currentTeam.id ? { ...team, meetingTime } : team,
+          team.id === currentTeam.id
+            ? {
+                ...team,
+                meetingOptions: (team.meetingOptions || []).map((option) => {
+                  const withoutCurrentUser = option.voterIds.filter((userId) => userId !== currentUser.id);
+                  return option.id === optionId
+                    ? {
+                        ...option,
+                        voterIds: [...withoutCurrentUser, currentUser.id],
+                      }
+                    : {
+                        ...option,
+                        voterIds: withoutCurrentUser,
+                      };
+                }),
+              }
+            : team,
         ),
       }));
     },

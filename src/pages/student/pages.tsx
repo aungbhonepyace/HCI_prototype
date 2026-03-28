@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { AccessBanner } from "@/components/layouts";
 import {
   Avatar,
@@ -13,19 +13,22 @@ import {
   VerifiedBadge,
 } from "@/components/ui";
 import { useApp } from "@/lib/app-context";
-import { resolveMatchingProfile } from "@/lib/matching";
+import { resolveMatchingProfile, shouldFastTrackQueueMatch } from "@/lib/matching";
 import type {
   AiAnswers,
   AvailabilitySlot,
   ContactMethod,
   GoalLevel,
+  NotificationType,
   MeetingPreference,
+  TeamProposal,
   ResponseTime,
   ProjectRole,
   QueueConstraints,
   ReportCategory,
   ReportSeverity,
   TargetType,
+  User,
   WorkingStyle,
 } from "@/lib/types";
 import {
@@ -66,6 +69,137 @@ function getProjectPeers(projectId: string | undefined, memberships: ReturnType<
 
 function getMatchingSnapshot(state: ReturnType<typeof useApp>["state"], userId: string) {
   return resolveMatchingProfile(state, userId);
+}
+
+function getProjectSettingSnapshot(
+  state: ReturnType<typeof useApp>["state"],
+  projectId: string | undefined,
+  teamSize?: number,
+  deadline?: string,
+) {
+  if (!projectId) {
+    return undefined;
+  }
+
+  return (
+    state.projectSettings.find((setting) => setting.projectId === projectId) ||
+    (teamSize && deadline
+      ? {
+          projectId,
+          teamSize,
+          proposalExpiryMinutes: 30,
+          overflowTeamsAllowed: 0,
+          formationDeadline: deadline,
+          forceOverflowAtDeadline: true,
+        }
+      : undefined)
+  );
+}
+
+function getOverflowSnapshot(
+  state: ReturnType<typeof useApp>["state"],
+  projectId: string | undefined,
+  overflowTeamsAllowed: number = 0,
+) {
+  if (!projectId) {
+    return undefined;
+  }
+
+  return (
+    state.overflowState.find((entry) => entry.projectId === projectId) || {
+      projectId,
+      overflowTeamsAllowed,
+      overflowSlotsNeeded: overflowTeamsAllowed,
+      overflowSlotsFilled: 0,
+      overflowMemberIds: [],
+      forcedOverflowMemberIds: [],
+      deadlineFinalized: false,
+    }
+  );
+}
+
+function OverflowQueueBanner({
+  overflowTeamsAllowed,
+  formationDeadline,
+  volunteer,
+}: {
+  overflowTeamsAllowed: number;
+  formationDeadline: string;
+  volunteer?: boolean;
+}) {
+  if (!overflowTeamsAllowed) {
+    return null;
+  }
+
+  return (
+    <AccessBanner
+      title={`Overflow policy enabled: up to ${overflowTeamsAllowed} team${overflowTeamsAllowed === 1 ? "" : "s"} may add +1 member`}
+      description={
+        volunteer
+          ? `You are in Flex volunteer mode, so GroupFinder may place you into the extra slot before the formation deadline on ${formatDeadline(formationDeadline)}.`
+          : `Volunteers can be placed faster into the extra slot. Formation deadline: ${formatDeadline(formationDeadline)}.`
+      }
+    />
+  );
+}
+
+function formatMeetingOption(value: string) {
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatExpiresIn(expiresAt: string, now: number) {
+  const diff = Math.max(0, new Date(expiresAt).getTime() - now);
+  const minutes = Math.floor(diff / 60000);
+  const seconds = Math.floor((diff % 60000) / 1000);
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function getProposalStatusTone(status: TeamProposal["status"]) {
+  switch (status) {
+    case "confirmed":
+      return "success" as const;
+    case "expired":
+    case "cancelled":
+      return "warn" as const;
+    default:
+      return "soft" as const;
+  }
+}
+
+function getMemberStatusTone(status: TeamProposal["memberStatuses"][string]) {
+  switch (status) {
+    case "accepted":
+      return "success" as const;
+    case "declined":
+      return "warn" as const;
+    default:
+      return "soft" as const;
+  }
+}
+
+function getNotificationTypeLabel(type: NotificationType) {
+  switch (type) {
+    case "PROPOSAL_INVITE":
+      return "Proposal invite";
+    case "PROPOSAL_ACCEPTED":
+      return "Accepted";
+    case "PROPOSAL_DECLINED":
+      return "Declined";
+    case "PROPOSAL_REFILLING":
+      return "Refilling";
+    case "PROPOSAL_EXPIRED":
+      return "Expired";
+    case "TEAM_CONFIRMED":
+      return "Team confirmed";
+    default:
+      return "Update";
+  }
 }
 
 function ProjectScopePicker({
@@ -173,6 +307,17 @@ export function StudentDashboardPage() {
   }
 
   const currentMatching = getMatchingSnapshot(state, currentUser.id);
+  const projectSetting = getProjectSettingSnapshot(
+    state,
+    currentProject?.id,
+    currentProject?.teamSize,
+    currentProject?.deadline,
+  );
+  const overflow = getOverflowSnapshot(
+    state,
+    currentProject?.id,
+    projectSetting?.overflowTeamsAllowed || 0,
+  );
   const profileReady =
     Boolean(currentUser.profile.bio.trim()) &&
     Boolean(currentUser.profile.timeZone.trim()) &&
@@ -223,8 +368,8 @@ export function StudentDashboardPage() {
         <StatCard label="Projects" value={studentProjects.length} detail="Active memberships on this account" />
         <StatCard
           label="Deadline"
-          value={currentProject ? formatDeadline(currentProject.deadline) : "Join first"}
-          detail={currentProject ? currentProject.name : "No active project selected"}
+          value={projectSetting ? formatDeadline(projectSetting.formationDeadline) : "Join first"}
+          detail={currentProject ? `${currentProject.name} formation deadline` : "No active project selected"}
         />
         <StatCard
           label="Teams"
@@ -232,6 +377,42 @@ export function StudentDashboardPage() {
           detail={currentTeam ? `Selected project: ${sentenceCase(currentTeam.createdByMode)}` : "No team on selected project yet"}
         />
       </div>
+
+      {currentProject && projectSetting ? (
+        <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <article className="panel p-6">
+            <p className="subtle-label">Volunteer status</p>
+            <p className="mt-3 text-2xl font-semibold text-ink">
+              {currentUser.volunteer ? "ON" : "OFF"}
+            </p>
+            <p className="mt-2 text-sm text-ink/65">
+              {currentUser.volunteer
+                ? "You can be placed into an overflow slot to help balance uneven enrollment."
+                : "Turn on Flex volunteer in your profile if you want to help fill extra +1 slots."}
+            </p>
+          </article>
+          <article className="panel p-6">
+            <p className="subtle-label">Overflow policy</p>
+            <p className="mt-3 text-2xl font-semibold text-ink">
+              Up to {projectSetting.overflowTeamsAllowed}
+            </p>
+            <p className="mt-2 text-sm text-ink/65">
+              team{projectSetting.overflowTeamsAllowed === 1 ? "" : "s"} may have +1 member. Filled: {overflow?.overflowSlotsFilled || 0}/{projectSetting.overflowTeamsAllowed}.
+            </p>
+          </article>
+          <article className="panel p-6">
+            <p className="subtle-label">Deadline policy</p>
+            <p className="mt-3 text-2xl font-semibold text-ink">
+              {formatDeadline(projectSetting.formationDeadline)}
+            </p>
+            <p className="mt-2 text-sm text-ink/65">
+              {projectSetting.forceOverflowAtDeadline
+                ? "If volunteers are missing, remaining allowed overflow slots can be finalized automatically at the deadline."
+                : "Overflow is volunteer-only for this project."}
+            </p>
+          </article>
+        </section>
+      ) : null}
 
       <ProjectScopePicker
         currentProjectId={activeProjectId}
@@ -260,6 +441,12 @@ export function StudentDashboardPage() {
             <div className="flex flex-wrap items-center gap-3">
               <Badge tone="soft">Current project</Badge>
               <VerifiedBadge />
+              {projectSetting?.overflowTeamsAllowed ? (
+                <Badge tone="soft">
+                  {projectSetting.overflowTeamsAllowed} overflow slot
+                  {projectSetting.overflowTeamsAllowed === 1 ? "" : "s"}
+                </Badge>
+              ) : null}
             </div>
             <h2 className="mt-4 font-heading text-3xl font-semibold text-ink">{currentProject.name}</h2>
             <p className="mt-3 max-w-2xl text-sm text-ink/65">{currentProject.description}</p>
@@ -275,6 +462,12 @@ export function StudentDashboardPage() {
                 <p className="mt-2 text-sm text-ink/55">
                   Roles: {currentProject.roleTemplates.join(", ")}
                 </p>
+                {projectSetting?.overflowTeamsAllowed ? (
+                  <p className="mt-2 text-sm text-ink/55">
+                    Overflow allowed on up to {projectSetting.overflowTeamsAllowed} team
+                    {projectSetting.overflowTeamsAllowed === 1 ? "" : "s"} by the formation deadline.
+                  </p>
+                ) : null}
               </div>
             </div>
           </section>
@@ -390,6 +583,7 @@ export function StudentProfilePage() {
   );
   const [timeZone, setTimeZone] = useState(currentUser?.profile.timeZone || "");
   const [notes, setNotes] = useState(currentUser?.profile.notes || "");
+  const [volunteer, setVolunteer] = useState(Boolean(currentUser?.volunteer));
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
@@ -406,6 +600,7 @@ export function StudentProfilePage() {
     setMeetingPreference(currentUser.profile.meetingPreference);
     setTimeZone(currentUser.profile.timeZone);
     setNotes(currentUser.profile.notes);
+    setVolunteer(Boolean(currentUser.volunteer));
   }, [currentUser]);
 
   if (!currentUser) {
@@ -497,6 +692,22 @@ export function StudentProfilePage() {
             </Field>
           </div>
           <div className="md:col-span-2">
+            <label className="flex min-h-[68px] items-center justify-between rounded-[24px] border border-ink/10 px-5 py-4">
+              <div className="pr-4">
+                <p className="font-semibold text-ink">Flex volunteer</p>
+                <p className="mt-1 text-sm text-ink/55">
+                  Opt in to help balance uneven class sizes by taking an overflow +1 slot when needed.
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                checked={volunteer}
+                onChange={(event) => setVolunteer(event.target.checked)}
+                className="h-5 w-5 accent-ink"
+              />
+            </label>
+          </div>
+          <div className="md:col-span-2">
             <Field label="Notes / boundaries">
               <textarea
                 className="textarea"
@@ -512,6 +723,7 @@ export function StudentProfilePage() {
               updateCurrentUser({
                 name,
                 email,
+                volunteer,
                 profile: {
                   bio,
                   major,
@@ -540,6 +752,7 @@ export function StudentProfilePage() {
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <VerifiedBadge />
                 <Badge tone="soft">{meetingPreference}</Badge>
+                {volunteer ? <Badge tone="success">Flex volunteer</Badge> : null}
               </div>
             </div>
           </div>
@@ -551,6 +764,9 @@ export function StudentProfilePage() {
             </p>
             <p className="mt-2 text-sm text-ink/70">
               {major || "Major optional"} {year ? `• ${year}` : ""} • {timeZone || "Add a time zone"}
+            </p>
+            <p className="mt-2 text-sm text-ink/70">
+              Volunteer status: {volunteer ? "ON" : "OFF"}
             </p>
             <p className="mt-2 text-sm text-ink/70">{notes || "No extra boundaries or notes added yet."}</p>
           </div>
@@ -570,6 +786,12 @@ export function MatchModePickerPage() {
     state,
     studentProjects,
   } = useApp();
+  const projectSetting = getProjectSettingSnapshot(
+    state,
+    currentProject?.id,
+    currentProject?.teamSize,
+    currentProject?.deadline,
+  );
 
   if (!currentProject) {
     return (
@@ -611,6 +833,14 @@ export function MatchModePickerPage() {
           tone="warn"
           title="Matching is currently unavailable"
           description="An instructor has restricted this account from forming new teams. You can still switch projects and review any existing team workspaces."
+        />
+      ) : null}
+
+      {projectSetting ? (
+        <OverflowQueueBanner
+          overflowTeamsAllowed={projectSetting.overflowTeamsAllowed}
+          formationDeadline={projectSetting.formationDeadline}
+          volunteer={currentUser?.volunteer}
         />
       ) : null}
 
@@ -870,11 +1100,18 @@ export function AIChatPage() {
 }
 
 export function AIResultPage() {
-  const { acceptAiMatch, currentProject, currentUser, rematchAi, state } = useApp();
+  const { currentProject, currentUser, proposeAiTeam, rematchAi, state } = useApp();
   const navigate = useNavigate();
+  const [proposalMessage, setProposalMessage] = useState<string | null>(null);
 
   const session = getCurrentAiSession(currentUser?.id, currentProject?.id, state.aiSessions);
   const result = session?.lastResult;
+  const existingActiveProposal = state.teamProposals.find(
+    (proposal) =>
+      proposal.projectId === currentProject?.id &&
+      proposal.createdByUserId === currentUser?.id &&
+      (proposal.status === "pending" || proposal.status === "refilling"),
+  );
 
   if (!currentProject || !currentUser || !result) {
     return (
@@ -893,8 +1130,15 @@ export function AIResultPage() {
       <PageIntro
         eyebrow="AI match result"
         title="Review the suggested roster before you commit."
-        description="The roster is transparent by design. You can see roles, verification, and compatibility notes before accepting."
+        description="The roster is transparent by design. You can see roles, verification, and compatibility notes before proposing the team for mutual confirmation."
       />
+
+      {existingActiveProposal ? (
+        <AccessBanner
+          title="Active proposal already exists"
+          description="You already have a live AI proposal for this project. Open it instead of sending another invite set."
+        />
+      ) : null}
 
       <div className="grid gap-4 xl:grid-cols-[1.2fr,0.8fr]">
         <section className="panel p-6 md:p-8">
@@ -956,13 +1200,14 @@ export function AIResultPage() {
             <button
               className="btn-primary"
               onClick={() => {
-                const teamId = acceptAiMatch();
-                if (teamId) {
-                  navigate("/student/team");
+                const result = proposeAiTeam();
+                setProposalMessage(result.message);
+                if (result.ok && result.proposalId) {
+                  navigate(`/student/proposals/${result.proposalId}`);
                 }
               }}
             >
-              Accept roster
+              Propose team
             </button>
             <button
               className="btn-secondary"
@@ -972,6 +1217,333 @@ export function AIResultPage() {
             >
               Rematch
             </button>
+          </div>
+          {proposalMessage ? <p className="text-sm text-ink/65">{proposalMessage}</p> : null}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+export function ProposalsPage() {
+  const { currentUser, state } = useApp();
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  if (!currentUser) {
+    return null;
+  }
+
+  const relevantProposals = state.teamProposals
+    .filter(
+      (proposal) =>
+        proposal.createdByUserId === currentUser.id || Boolean(proposal.memberStatuses[currentUser.id]),
+    )
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const activeProposals = relevantProposals.filter(
+    (proposal) => proposal.status === "pending" || proposal.status === "refilling",
+  );
+  const recentProposals = relevantProposals.filter(
+    (proposal) => proposal.status !== "pending" && proposal.status !== "refilling",
+  );
+
+  return (
+    <div className="space-y-4 md:space-y-6">
+      <PageIntro
+        eyebrow="Team proposals"
+        title="Review open invites and confirmation progress."
+        description="AI team suggestions now require mutual confirmation. Accepted members stay together while declined slots refill."
+      />
+
+      {activeProposals.length ? (
+        <section className="space-y-4">
+          {activeProposals.map((proposal) => {
+            const project = state.projects.find((entry) => entry.id === proposal.projectId);
+            const currentStatus = proposal.memberStatuses[currentUser.id];
+            const roster = state.users.filter((user) => proposal.memberIds.includes(user.id));
+
+            return (
+              <article key={proposal.id} className="panel p-6 md:p-8">
+                <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge tone={getProposalStatusTone(proposal.status)}>
+                        {sentenceCase(proposal.status)}
+                      </Badge>
+                      {currentStatus ? (
+                        <Badge tone={getMemberStatusTone(currentStatus)}>
+                          {sentenceCase(currentStatus)}
+                        </Badge>
+                      ) : null}
+                      {proposal.status === "refilling" ? (
+                        <Badge tone="soft">
+                          {proposal.slotsNeeded
+                            ? `${proposal.slotsNeeded} slot${proposal.slotsNeeded === 1 ? "" : "s"} open`
+                            : "Waiting on refill replies"}
+                        </Badge>
+                      ) : null}
+                    </div>
+                    <h2 className="mt-4 font-heading text-2xl font-semibold text-ink">
+                      {project?.name || "Project proposal"}
+                    </h2>
+                    <p className="mt-2 text-sm text-ink/65">
+                      Expires in: {formatExpiresIn(proposal.expiresAt, now)}
+                    </p>
+                    <div className="mt-4 grid gap-3 md:grid-cols-2">
+                      {roster.map((user) => (
+                        <div key={user.id} className="rounded-[20px] border border-ink/10 p-4">
+                          <div className="flex min-w-0 items-start gap-3">
+                            <Avatar user={user} size="sm" />
+                            <div className="min-w-0">
+                              <p className="font-semibold text-ink">{user.name}</p>
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                <Badge tone={getMemberStatusTone(proposal.memberStatuses[user.id])}>
+                                  {sentenceCase(proposal.memberStatuses[user.id])}
+                                </Badge>
+                                <RolePill role={proposal.roleAssignments[user.id]} />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <Link to={`/student/proposals/${proposal.id}`} className="btn-primary self-start">
+                    Open proposal
+                  </Link>
+                </div>
+              </article>
+            );
+          })}
+        </section>
+      ) : (
+        <EmptyState
+          title="No active proposals"
+          body="When you propose an AI team or receive an invite, it will show up here."
+          action={<Link to="/student/match/ai" className="btn-primary">Open AI matcher</Link>}
+        />
+      )}
+
+      {recentProposals.length ? (
+        <section className="space-y-4">
+          <p className="subtle-label">Recent proposal outcomes</p>
+          {recentProposals.slice(0, 6).map((proposal) => {
+            const project = state.projects.find((entry) => entry.id === proposal.projectId);
+            return (
+              <article key={proposal.id} className="panel p-5">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge tone={getProposalStatusTone(proposal.status)}>
+                        {sentenceCase(proposal.status)}
+                      </Badge>
+                      <p className="font-semibold text-ink">{project?.name || "Project proposal"}</p>
+                    </div>
+                    <p className="mt-2 text-sm text-ink/65">{formatDate(proposal.createdAt)}</p>
+                  </div>
+                  <Link to={`/student/proposals/${proposal.id}`} className="btn-secondary self-start">
+                    View detail
+                  </Link>
+                </div>
+              </article>
+            );
+          })}
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+export function ProposalDetailPage() {
+  const { id } = useParams();
+  const { currentUser, respondToProposal, state } = useApp();
+  const navigate = useNavigate();
+  const [now, setNow] = useState(Date.now());
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  if (!currentUser) {
+    return null;
+  }
+
+  const proposal = state.teamProposals.find((entry) => entry.id === id);
+  if (!proposal) {
+    return (
+      <EmptyState
+        title="Proposal not found"
+        body="This invite may have expired or been removed."
+        action={<Link to="/student/proposals" className="btn-primary">Back to proposals</Link>}
+      />
+    );
+  }
+
+  const project = state.projects.find((entry) => entry.id === proposal.projectId);
+  const currentStatus = proposal.memberStatuses[currentUser.id];
+  const isCurrentUserInConfirmedTeam = state.memberships.some(
+    (membership) =>
+      membership.userId === currentUser.id &&
+      membership.projectId === proposal.projectId &&
+      membership.status === "active" &&
+      Boolean(membership.teamId),
+  );
+  const participantIds = [
+    ...proposal.memberIds,
+    ...Object.keys(proposal.memberStatuses).filter((userId) => !proposal.memberIds.includes(userId)),
+  ];
+  const participants = participantIds
+    .map((userId) => state.users.find((user) => user.id === userId))
+    .filter((user): user is User => Boolean(user));
+
+  return (
+    <div className="space-y-4 md:space-y-6">
+      <PageIntro
+        eyebrow="Proposal detail"
+        title={project?.name || "Team proposal"}
+        description="Review the roster, respond to the invite, and track refill progress if anyone declines."
+        actions={
+          proposal.status === "confirmed" ? (
+            <Link to="/student/team" className="btn-primary">
+              Open team
+            </Link>
+          ) : (
+            <Link to="/student/proposals" className="btn-secondary">
+              All proposals
+            </Link>
+          )
+        }
+      />
+
+      <section className="panel p-6 md:p-8">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={getProposalStatusTone(proposal.status)}>
+                {sentenceCase(proposal.status)}
+              </Badge>
+              {currentStatus ? (
+                <Badge tone={getMemberStatusTone(currentStatus)}>
+                  {sentenceCase(currentStatus)}
+                </Badge>
+              ) : null}
+              {proposal.status === "refilling" ? (
+                <Badge tone="soft">
+                  {proposal.slotsNeeded
+                    ? `${proposal.slotsNeeded} slot${proposal.slotsNeeded === 1 ? "" : "s"} still needed`
+                    : "Replacement invites sent"}
+                </Badge>
+              ) : null}
+            </div>
+            <p className="mt-4 text-sm text-ink/65">
+              Expires in:{" "}
+              {proposal.status === "pending" || proposal.status === "refilling"
+                ? formatExpiresIn(proposal.expiresAt, now)
+                : "00:00"}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            {proposal.status === "pending" || proposal.status === "refilling" ? (
+              currentStatus === "pending" ? (
+                <>
+                  <button
+                    className="btn-primary"
+                    onClick={() => {
+                      const result = respondToProposal(proposal.id, "accepted");
+                      setActionMessage(result.message);
+                      if (result.teamId) {
+                        navigate("/student/team");
+                      }
+                    }}
+                    disabled={isCurrentUserInConfirmedTeam}
+                  >
+                    Accept
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    onClick={() => {
+                      const result = respondToProposal(proposal.id, "declined");
+                      setActionMessage(result.message);
+                    }}
+                  >
+                    Decline
+                  </button>
+                </>
+              ) : currentStatus === "accepted" ? (
+                <Badge tone="success">Waiting for others...</Badge>
+              ) : currentStatus === "declined" ? (
+                <Badge tone="warn">You declined</Badge>
+              ) : null
+            ) : null}
+          </div>
+        </div>
+
+        {isCurrentUserInConfirmedTeam && (proposal.status === "pending" || proposal.status === "refilling") ? (
+          <div className="mt-4">
+            <AccessBanner
+              tone="warn"
+              title="You already joined a confirmed team"
+              description="This proposal can no longer be accepted from your account."
+            />
+          </div>
+        ) : null}
+        {actionMessage ? <p className="mt-4 text-sm text-ink/65">{actionMessage}</p> : null}
+      </section>
+
+      <div className="grid gap-4 xl:grid-cols-[1.15fr,0.85fr]">
+        <section className="panel p-6 md:p-8">
+          <p className="subtle-label">Proposed roster</p>
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            {participants.map((user) => (
+              <article key={user.id} className="panel-muted p-5">
+                <div className="flex min-w-0 items-start gap-3">
+                  <Avatar user={user} />
+                  <div className="min-w-0">
+                    <p className="font-semibold text-ink">{user.name}</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <VerifiedBadge />
+                      <Badge tone={getMemberStatusTone(proposal.memberStatuses[user.id])}>
+                        {sentenceCase(proposal.memberStatuses[user.id])}
+                      </Badge>
+                      <RolePill role={proposal.roleAssignments[user.id]} />
+                    </div>
+                  </div>
+                </div>
+                <p className="mt-4 text-sm text-ink/65">{user.profile.bio}</p>
+                <p className="mt-3 text-sm text-ink/65">
+                  Skills: {getMatchingSnapshot(state, user.id).skills.slice(0, 3).join(", ") || "None listed"}
+                </p>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="panel space-y-5 p-6 md:p-8">
+          <div>
+            <p className="subtle-label">Why this match</p>
+            <ul className="mt-4 space-y-3 text-sm text-ink/65">
+              {proposal.reasons.map((reason) => (
+                <li key={reason} className="rounded-[20px] bg-sand/70 px-4 py-3">
+                  {reason}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div>
+            <p className="subtle-label">Compatibility summary</p>
+            <ul className="mt-4 space-y-3 text-sm text-ink/65">
+              {proposal.compatibilitySummary.map((item) => (
+                <li key={item} className="rounded-[20px] border border-ink/10 px-4 py-3">
+                  {item}
+                </li>
+              ))}
+            </ul>
           </div>
         </section>
       </div>
@@ -991,6 +1563,12 @@ export function QueueRolePage() {
   const navigate = useNavigate();
   const queue = getCurrentQueueSession(currentUser?.id, currentProject?.id, state.queueSessions);
   const currentMatching = currentUser ? getMatchingSnapshot(state, currentUser.id) : undefined;
+  const projectSetting = getProjectSettingSnapshot(
+    state,
+    currentProject?.id,
+    currentProject?.teamSize,
+    currentProject?.deadline,
+  );
   const roleOptions = currentProject?.roleTemplates.length ? currentProject.roleTemplates : ROLE_OPTIONS;
   const [primaryRole, setPrimaryRole] = useState<ProjectRole>(
     queue?.primaryRole || currentMatching?.rolePreference || roleOptions[0] || "UI/Design",
@@ -1014,6 +1592,14 @@ export function QueueRolePage() {
         title="Claim the role you want to own first."
         description="Primary role is required. Secondary role is optional and helps the queue cover gaps without hiding identities."
       />
+
+      {projectSetting ? (
+        <OverflowQueueBanner
+          overflowTeamsAllowed={projectSetting.overflowTeamsAllowed}
+          formationDeadline={projectSetting.formationDeadline}
+          volunteer={currentUser?.volunteer}
+        />
+      ) : null}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {roleOptions.map((role) => (
@@ -1068,6 +1654,12 @@ export function QueueConstraintsPage() {
   const navigate = useNavigate();
   const queue = getCurrentQueueSession(currentUser?.id, currentProject?.id, state.queueSessions);
   const currentMatching = currentUser ? getMatchingSnapshot(state, currentUser.id) : undefined;
+  const projectSetting = getProjectSettingSnapshot(
+    state,
+    currentProject?.id,
+    currentProject?.teamSize,
+    currentProject?.deadline,
+  );
   const [availability, setAvailability] = useState<AvailabilitySlot[]>(
     queue?.constraints?.availability || currentMatching?.availability || [],
   );
@@ -1088,6 +1680,14 @@ export function QueueConstraintsPage() {
         title="Set the compatibility rules for your queue draw."
         description="Use must when you need strict alignment. Use prefer when you want more flexibility and a broader pool."
       />
+
+      {projectSetting ? (
+        <OverflowQueueBanner
+          overflowTeamsAllowed={projectSetting.overflowTeamsAllowed}
+          formationDeadline={projectSetting.formationDeadline}
+          volunteer={currentUser?.volunteer}
+        />
+      ) : null}
 
       <section className="panel grid gap-5 p-6 md:grid-cols-2 md:p-8">
         <div className="md:col-span-2">
@@ -1158,6 +1758,12 @@ export function QueueStatusPage() {
   const { currentProject, currentUser, enterQueue, leaveQueue, resolveQueueMatch, state } = useApp();
   const navigate = useNavigate();
   const queue = getCurrentQueueSession(currentUser?.id, currentProject?.id, state.queueSessions);
+  const projectSetting = getProjectSettingSnapshot(
+    state,
+    currentProject?.id,
+    currentProject?.teamSize,
+    currentProject?.deadline,
+  );
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
@@ -1168,14 +1774,33 @@ export function QueueStatusPage() {
   const isInactive = Boolean(queue && !queue.inQueue && !queue.lastMatch);
   const queueStart = queue?.startedAt ? new Date(queue.startedAt).getTime() : now;
   const queueEnd = queueStart + (queue?.etaSeconds || 45) * 1000;
+  const elapsedSeconds = queue?.startedAt ? Math.max(0, Math.floor((now - queueStart) / 1000)) : 0;
   const remaining = isInactive ? queue?.etaSeconds || 45 : Math.max(0, Math.ceil((queueEnd - now) / 1000));
+  const shouldResolveEarly = Boolean(
+    currentProject &&
+      currentUser &&
+      queue?.inQueue &&
+      !queue.lastMatch &&
+      queue.primaryRole &&
+      queue.constraints &&
+      shouldFastTrackQueueMatch(
+        state,
+        currentProject,
+        currentUser,
+        queue.primaryRole,
+        queue.secondaryRole,
+        queue.constraints,
+        queue.requeueCount,
+        elapsedSeconds,
+      ),
+  );
 
   useEffect(() => {
-    if (!queue || !queue.inQueue || queue.lastMatch || remaining > 0) {
+    if (!queue || !queue.inQueue || queue.lastMatch || (remaining > 0 && !shouldResolveEarly)) {
       return;
     }
     resolveQueueMatch();
-  }, [queue, remaining, resolveQueueMatch]);
+  }, [queue, remaining, resolveQueueMatch, shouldResolveEarly]);
 
   if (!currentProject || !queue) {
     return (
@@ -1203,6 +1828,14 @@ export function QueueStatusPage() {
             : "This screen simulates live queueing with an ETA, health counts, and the ability to tweak your role setup or leave the queue."
         }
       />
+
+      {projectSetting ? (
+        <OverflowQueueBanner
+          overflowTeamsAllowed={projectSetting.overflowTeamsAllowed}
+          formationDeadline={projectSetting.formationDeadline}
+          volunteer={currentUser?.volunteer}
+        />
+      ) : null}
 
       <div className="grid gap-4 xl:grid-cols-[0.9fr,1.1fr]">
         <section className="panel p-6 md:p-8">
@@ -1282,6 +1915,12 @@ export function QueueMatchPage() {
   const navigate = useNavigate();
   const [reasons, setReasons] = useState<string[]>([]);
   const queue = getCurrentQueueSession(currentUser?.id, currentProject?.id, state.queueSessions);
+  const projectSetting = getProjectSettingSnapshot(
+    state,
+    currentProject?.id,
+    currentProject?.teamSize,
+    currentProject?.deadline,
+  );
   const result = queue?.lastMatch;
 
   if (!currentProject || !currentUser || !result) {
@@ -1304,6 +1943,14 @@ export function QueueMatchPage() {
         title="Lucky Draw generated a role-balanced roster."
         description="Review role coverage and compatibility notes, then accept the team or re-queue for a different draw."
       />
+
+      {projectSetting ? (
+        <OverflowQueueBanner
+          overflowTeamsAllowed={projectSetting.overflowTeamsAllowed}
+          formationDeadline={projectSetting.formationDeadline}
+          volunteer={currentUser?.volunteer}
+        />
+      ) : null}
 
       <div className="grid gap-4 xl:grid-cols-[1.15fr,0.85fr]">
         <section className="panel p-6 md:p-8">
@@ -1394,19 +2041,31 @@ export function QueueMatchPage() {
 
 export function TeamWorkspacePage() {
   const {
+    addMeetingOption,
     activeProjectId,
     currentProject,
     currentTeam,
     currentUser,
     sendTeamMessage,
     setActiveProject,
-    setMeetingTime,
     state,
     studentProjects,
     studentTeams,
     toggleTask,
+    voteMeetingOption,
   } = useApp();
   const [message, setMessage] = useState("");
+  const [meetingDraft, setMeetingDraft] = useState("");
+  const [meetingFeedback, setMeetingFeedback] = useState<{
+    tone: "success" | "error";
+    message: string;
+  } | null>(null);
+  const projectSetting = getProjectSettingSnapshot(
+    state,
+    currentProject?.id,
+    currentProject?.teamSize,
+    currentProject?.deadline,
+  );
 
   if (!currentUser) {
     return null;
@@ -1459,6 +2118,12 @@ export function TeamWorkspacePage() {
   const teamMembers = state.users.filter((user) => currentTeam.memberIds.includes(user.id));
   const chatBucket = state.teamChat.find((bucket) => bucket.teamId === currentTeam.id);
   const taskBucket = state.teamTasks.find((bucket) => bucket.teamId === currentTeam.id);
+  const meetingOptions = [...(currentTeam.meetingOptions || [])].sort(
+    (left, right) =>
+      right.voterIds.length - left.voterIds.length || left.startsAt.localeCompare(right.startsAt),
+  );
+  const leadingMeetingOption = meetingOptions[0];
+  const currentVoteId = meetingOptions.find((option) => option.voterIds.includes(currentUser.id))?.id;
 
   return (
     <div className="space-y-4 md:space-y-6">
@@ -1468,6 +2133,40 @@ export function TeamWorkspacePage() {
         description="Everything here is stored locally and survives refresh. Use the project switcher when you need to jump between multiple class teams."
       />
 
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <article className="panel p-5 md:p-6">
+          <p className="subtle-label">Team size</p>
+          <p className="mt-3 text-2xl font-semibold text-ink">
+            {currentTeam.memberIds.length} member{currentTeam.memberIds.length === 1 ? "" : "s"}
+          </p>
+          <p className="mt-2 text-sm text-ink/65">
+            {currentTeam.isOverflowTeam
+              ? "Team size exception (+1) – admin allowed."
+              : `Standard size target: ${projectSetting?.teamSize || currentProject.teamSize}.`}
+          </p>
+        </article>
+        <article className="panel p-5 md:p-6">
+          <p className="subtle-label">Formation mode</p>
+          <p className="mt-3 text-2xl font-semibold text-ink">
+            {currentTeam.createdByMode === "ai" ? "AI proposal" : "Lucky Draw"}
+          </p>
+          <p className="mt-2 text-sm text-ink/65">
+            {currentTeam.isOverflowTeam && currentTeam.overflowMemberId
+              ? "An extra member was attached after team confirmation."
+              : "This roster is confirmed and stored locally."}
+          </p>
+        </article>
+        <article className="panel p-5 md:p-6">
+          <p className="subtle-label">Overflow policy</p>
+          <p className="mt-3 text-2xl font-semibold text-ink">
+            {projectSetting?.overflowTeamsAllowed || 0} allowed
+          </p>
+          <p className="mt-2 text-sm text-ink/65">
+            Formation deadline {projectSetting ? formatDeadline(projectSetting.formationDeadline) : formatDeadline(currentProject.deadline)}
+          </p>
+        </article>
+      </section>
+
       <ProjectScopePicker
         currentProjectId={activeProjectId}
         projects={studentProjects}
@@ -1475,14 +2174,14 @@ export function TeamWorkspacePage() {
         userId={currentUser.id}
         onSelect={setActiveProject}
         title="Switch team workspace"
-        description="A student can belong to multiple project teams. Select another project here to open its roster, chat, tasks, and meeting plan."
+        description="A student can belong to multiple project teams. Select another project here to open its roster, chat, tasks, and meeting vote."
       />
 
       {currentUser.flags.chatMuted ? (
         <AccessBanner
           tone="warn"
           title="Chat is disabled for this account"
-          description="You can still review messages, tasks, and meeting time, but sending new messages is blocked."
+          description="You can still review messages, tasks, and meeting votes, but sending new messages is blocked."
         />
       ) : null}
 
@@ -1505,32 +2204,38 @@ export function TeamWorkspacePage() {
               chatBucket.messages.map((entry) => {
                 const author = teamMembers.find((member) => member.id === entry.userId);
                 const mine = entry.userId === currentUser.id;
+                const isSystem = entry.userId === "system";
                 return (
-                  <div key={entry.id} className={cn("flex", mine ? "justify-end" : "justify-start")}>
+                  <div
+                    key={entry.id}
+                    className={cn("flex", mine ? "justify-end" : "justify-start")}
+                  >
                     <div
                       className={cn(
                         "max-w-[88%] rounded-[24px] px-4 py-3 text-sm",
-                        mine ? "bg-ink text-white" : "bg-white text-ink",
+                        mine ? "bg-ink text-white" : isSystem ? "bg-sand text-ink" : "bg-white text-ink",
                       )}
                     >
                       <div className="flex items-center justify-between gap-4">
                         <span className={cn("font-semibold", mine ? "text-white/90" : "text-ink")}>
-                          {author?.name || "Unknown"}
+                          {isSystem ? "System" : author?.name || "Unknown"}
                         </span>
                         <span className={cn("text-xs", mine ? "text-white/60" : "text-ink/45")}>
                           {formatDate(entry.createdAt)}
                         </span>
                       </div>
                       <p className="mt-2">{entry.content}</p>
-                      <Link
-                        to={`/student/report?targetType=message&targetId=${entry.id}`}
-                        className={cn(
-                          "mt-3 inline-flex text-xs font-semibold",
-                          mine ? "text-white/70" : "text-coral",
-                        )}
-                      >
-                        Report message
-                      </Link>
+                      {!isSystem ? (
+                        <Link
+                          to={`/student/report?targetType=message&targetId=${entry.id}`}
+                          className={cn(
+                            "mt-3 inline-flex text-xs font-semibold",
+                            mine ? "text-white/70" : "text-coral",
+                          )}
+                        >
+                          Report message
+                        </Link>
+                      ) : null}
                     </div>
                   </div>
                 );
@@ -1583,26 +2288,104 @@ export function TeamWorkspacePage() {
           </article>
 
           <article className="panel p-5 md:p-6">
-            <p className="subtle-label">Meeting</p>
-            <Field label="Pick a meeting time">
-              <input
-                type="datetime-local"
-                className="input"
-                value={currentTeam.meetingTime || ""}
-                onChange={(event) => setMeetingTime(event.target.value)}
-              />
+            <p className="subtle-label">Meeting vote</p>
+            <Field label="Suggest a meeting option">
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <input
+                  type="datetime-local"
+                  className="input flex-1"
+                  value={meetingDraft}
+                  onChange={(event) => setMeetingDraft(event.target.value)}
+                />
+                <button
+                  className="btn-primary"
+                  onClick={() => {
+                    const result = addMeetingOption(meetingDraft);
+                    setMeetingFeedback({
+                      tone: result.ok ? "success" : "error",
+                      message: result.message,
+                    });
+                    if (result.ok) {
+                      setMeetingDraft("");
+                    }
+                  }}
+                >
+                  Add option
+                </button>
+              </div>
             </Field>
-            {currentTeam.meetingTime ? (
-              <p className="mt-4 text-sm text-ink/65">
-                Saved locally for this team: {currentTeam.meetingTime.replace("T", " ")}
+            <p className="mt-4 text-sm text-ink/65">
+              Each teammate gets one vote. Adding the same time again moves your vote there.
+            </p>
+            {meetingFeedback ? (
+              <p
+                className={cn(
+                  "mt-3 text-sm",
+                  meetingFeedback.tone === "success" ? "text-mint" : "text-coral",
+                )}
+              >
+                {meetingFeedback.message}
               </p>
             ) : null}
+            {leadingMeetingOption ? (
+              <div className="mt-5 rounded-[20px] bg-sand/60 px-4 py-3">
+                <p className="text-sm font-semibold text-ink">
+                  Current leader: {formatMeetingOption(leadingMeetingOption.startsAt)}
+                </p>
+                <p className="mt-1 text-sm text-ink/65">
+                  {leadingMeetingOption.voterIds.length} vote
+                  {leadingMeetingOption.voterIds.length === 1 ? "" : "s"} so far.
+                </p>
+              </div>
+            ) : null}
+            <div className="mt-4 space-y-3">
+              {meetingOptions.length ? (
+                meetingOptions.map((option) => {
+                  const proposer = teamMembers.find((member) => member.id === option.proposedBy);
+                  const hasMyVote = option.id === currentVoteId;
+                  const isLeading = option.id === leadingMeetingOption?.id;
+
+                  return (
+                    <div key={option.id} className="rounded-[20px] border border-ink/10 px-4 py-4">
+                      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="font-semibold text-ink">{formatMeetingOption(option.startsAt)}</p>
+                            {isLeading ? <Badge tone="success">Leading</Badge> : null}
+                            {hasMyVote ? <Badge tone="soft">Your vote</Badge> : null}
+                          </div>
+                          <p className="mt-2 text-sm text-ink/65">
+                            Proposed by {proposer?.name || "Team lead"} • {option.voterIds.length} vote
+                            {option.voterIds.length === 1 ? "" : "s"}
+                          </p>
+                        </div>
+                        <button
+                          className={hasMyVote ? "btn-primary" : "btn-secondary"}
+                          onClick={() => voteMeetingOption(option.id)}
+                        >
+                          {hasMyVote ? "Voted" : "Vote"}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <p className="text-sm text-ink/50">
+                  No meeting options yet. Add the first option to start the vote.
+                </p>
+              )}
+            </div>
           </article>
         </section>
 
         <section className="space-y-4">
           <article className="panel p-5 md:p-6">
             <p className="subtle-label">Roster</p>
+            {currentTeam.isOverflowTeam ? (
+              <p className="mt-3 text-sm text-ink/65">
+                {currentTeam.memberIds.length} members (overflow +1)
+              </p>
+            ) : null}
             <div className="mt-4 space-y-3">
               {teamMembers.map((member) => (
                 <div key={member.id} className="rounded-[20px] border border-ink/10 p-4">
@@ -1613,6 +2396,9 @@ export function TeamWorkspacePage() {
                       <div className="mt-2 flex flex-wrap gap-2">
                         <VerifiedBadge />
                         <RolePill role={currentTeam.roles[member.id]} />
+                        {currentTeam.overflowMemberId === member.id ? (
+                          <Badge tone="soft">Overflow +1</Badge>
+                        ) : null}
                       </div>
                     </div>
                   </div>
@@ -1656,7 +2442,7 @@ export function NotificationsPage() {
     <div className="space-y-4 md:space-y-6">
       <PageIntro
         eyebrow="Notifications"
-        title="Watch join events, match confirmations, and moderation updates."
+        title="Watch proposal invites, team confirmations, and moderation updates."
         description="Notifications are personal to the logged-in account and persist in localStorage."
         actions={
           <button className="btn-secondary" onClick={() => markAllNotificationsRead()}>
@@ -1679,6 +2465,7 @@ export function NotificationsPage() {
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-3">
                     {!notification.read ? <Badge tone="warn">New</Badge> : <Badge tone="soft">Read</Badge>}
+                    <Badge tone="soft">{getNotificationTypeLabel(notification.type)}</Badge>
                     <p className="font-semibold text-ink">{notification.title}</p>
                   </div>
                   <p className="mt-3 text-sm text-ink/65">{notification.body}</p>
@@ -1700,7 +2487,7 @@ export function NotificationsPage() {
             </article>
           ))
         ) : (
-          <EmptyState title="No notifications yet" body="Project joins, team creation, and report updates will appear here." />
+          <EmptyState title="No notifications yet" body="Proposal invites, project joins, team creation, and report updates will appear here." />
         )}
       </section>
     </div>

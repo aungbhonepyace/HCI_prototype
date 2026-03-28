@@ -1,6 +1,7 @@
 import type {
   AiAnswers,
   AppState,
+  ChatMessage,
   MatchSuggestion,
   MatchingProfile,
   Membership,
@@ -8,6 +9,8 @@ import type {
   ProjectRole,
   QueueConstraints,
   TeamRecord,
+  TeamCreatedFrom,
+  TeamProposal,
   User,
 } from "@/lib/types";
 import { createId, overlapCount, sentenceCase, unique } from "@/lib/utils";
@@ -45,6 +48,25 @@ function getActiveMembership(
   );
 }
 
+function isProposalLive(proposal: TeamProposal): boolean {
+  return proposal.status === "pending" || proposal.status === "refilling";
+}
+
+export function isUserInConfirmedProjectTeam(
+  state: AppState,
+  userId: string,
+  projectId: string,
+): boolean {
+  return state.memberships.some(
+    (membership) =>
+      membership.userId === userId &&
+      membership.projectId === projectId &&
+      membership.status === "active" &&
+      (membership.matchingStatus === "confirmed" ||
+        Boolean(membership.confirmedTeamId || membership.teamId)),
+  );
+}
+
 function getProjectAvailableStudents(
   state: AppState,
   projectId: string,
@@ -53,10 +75,13 @@ function getProjectAvailableStudents(
   const memberIds = state.memberships
     .filter(
       (membership) =>
-        membership.projectId === projectId &&
-        membership.status === "active" &&
-        membership.userId !== currentUserId &&
-        !membership.teamId,
+      membership.projectId === projectId &&
+      membership.status === "active" &&
+      membership.userId !== currentUserId &&
+      membership.matchingStatus !== "confirmed" &&
+      membership.matchingStatus !== "proposed" &&
+      !membership.confirmedTeamId &&
+      !membership.teamId,
     )
     .map((membership) => membership.userId);
 
@@ -353,15 +378,207 @@ export function buildQueueSuggestion(
   };
 }
 
+export function shouldFastTrackQueueMatch(
+  state: AppState,
+  project: ProjectRecord,
+  currentUser: User,
+  primaryRole: ProjectRole,
+  secondaryRole: ProjectRole | undefined,
+  constraints: QueueConstraints,
+  requeueCount: number,
+  elapsedSeconds: number,
+): boolean {
+  const preview = buildQueueSuggestion(
+    state,
+    project,
+    currentUser,
+    primaryRole,
+    secondaryRole,
+    constraints,
+    requeueCount,
+  );
+
+  if (!preview) {
+    return false;
+  }
+
+  const roleSpread = new Set(Object.values(preview.roleAssignments)).size;
+  const targetRoleSpread = Math.max(1, Math.min(project.roleTemplates.length || 1, 3));
+  const hiddenThreshold = requeueCount > 0 ? 4 : roleSpread >= targetRoleSpread ? 8 : 12;
+
+  return elapsedSeconds >= hiddenThreshold;
+}
+
+export function buildProposalCompatibilitySummary(
+  state: AppState,
+  memberIds: string[],
+  roleAssignments: Record<string, ProjectRole>,
+): string[] {
+  return memberIds
+    .map((userId) => {
+      const user = state.users.find((entry) => entry.id === userId);
+      if (!user) {
+        return undefined;
+      }
+
+      const matching = resolveMatchingProfile(state, userId);
+      const role = roleAssignments[userId] || matching.rolePreference;
+
+      return `${user.name}: ${role} lead, ${sentenceCase(matching.workingStyle)} workflow, ${sentenceCase(
+        matching.goalLevel,
+      )} goal, ${matching.availability.map(sentenceCase).join("/") || "flexible"} availability.`;
+    })
+    .filter((item): item is string => Boolean(item));
+}
+
+function getProposalRefillPool(
+  state: AppState,
+  project: ProjectRecord,
+  excludedIds: Set<string>,
+  excludedProposalId?: string,
+): Array<{ user: User; matching: MatchingProfile }> {
+  const candidateIds = unique(
+    state.memberships
+      .filter(
+        (membership) =>
+          membership.classId === project.classId &&
+          membership.status === "active" &&
+          (!membership.projectId || membership.projectId === project.id) &&
+          !membership.teamId,
+      )
+      .map((membership) => membership.userId),
+  );
+
+  return state.users
+    .filter((user) => {
+      if (
+        user.role !== "student" ||
+        excludedIds.has(user.id) ||
+        !candidateIds.includes(user.id) ||
+        user.flags.matchingRestricted ||
+        isUserInConfirmedProjectTeam(state, user.id, project.id)
+      ) {
+        return false;
+      }
+
+      return !state.teamProposals.some(
+        (proposal) =>
+          proposal.id !== excludedProposalId &&
+          isProposalLive(proposal) &&
+          proposal.memberIds.includes(user.id) &&
+          proposal.memberStatuses[user.id] !== "declined",
+      );
+    })
+    .map((user) => ({
+      user,
+      matching: resolveMatchingProfile(state, user.id),
+    }));
+}
+
+function scoreProposalRefillCandidate(
+  candidate: MatchingProfile,
+  teamProfiles: MatchingProfile[],
+  roleHint?: ProjectRole,
+): number {
+  const roleScore =
+    roleHint && candidate.rolePreference === roleHint
+      ? 12
+      : roleHint && candidate.secondaryRole === roleHint
+        ? 8
+        : 0;
+
+  const availabilityTarget = unique(teamProfiles.flatMap((profile) => profile.availability));
+  const skillTarget = unique(teamProfiles.flatMap((profile) => profile.skills));
+  const goalTarget = teamProfiles[0]?.goalLevel;
+  const styleTarget = teamProfiles[0]?.workingStyle;
+
+  return (
+    roleScore +
+    overlapCount(candidate.availability, availabilityTarget) * 4 +
+    overlapCount(candidate.skills, skillTarget) +
+    (goalTarget && candidate.goalLevel === goalTarget ? 4 : 0) +
+    (styleTarget && candidate.workingStyle === styleTarget ? 3 : 0)
+  );
+}
+
+export function findProposalRefillCandidates(
+  state: AppState,
+  project: ProjectRecord,
+  currentMemberIds: string[],
+  excludedIds: Set<string>,
+  roleAssignments: Record<string, ProjectRole>,
+  slotsNeeded: number,
+  excludedProposalId?: string,
+): { candidateIds: string[]; roleAssignments: Record<string, ProjectRole> } {
+  const pool = getProposalRefillPool(state, project, excludedIds, excludedProposalId);
+  const selectedIds: string[] = [];
+  const nextRoleAssignments = { ...roleAssignments };
+  const workingMemberIds = [...currentMemberIds];
+  const availableRoles = [...project.roleTemplates];
+
+  workingMemberIds.forEach((memberId) => {
+    const assignedRole = nextRoleAssignments[memberId];
+    const index = availableRoles.indexOf(assignedRole);
+    if (index >= 0) {
+      availableRoles.splice(index, 1);
+    }
+  });
+
+  while (selectedIds.length < slotsNeeded) {
+    const teamProfiles = workingMemberIds.map((memberId) => resolveMatchingProfile(state, memberId));
+    const roleHint = availableRoles[0];
+
+    const ordered = pool
+      .filter((candidate) => !selectedIds.includes(candidate.user.id))
+      .map((candidate) => ({
+        candidate,
+        score: scoreProposalRefillCandidate(candidate.matching, teamProfiles, roleHint),
+      }))
+      .sort(
+        (left, right) =>
+          right.score - left.score || left.candidate.user.name.localeCompare(right.candidate.user.name),
+      )
+      .map((entry) => entry.candidate);
+
+    const match = ordered[0];
+    if (!match) {
+      break;
+    }
+
+    selectedIds.push(match.user.id);
+    workingMemberIds.push(match.user.id);
+
+    const assignedRole =
+      (roleHint && (match.matching.rolePreference === roleHint || match.matching.secondaryRole === roleHint)
+        ? roleHint
+        : match.matching.rolePreference) ||
+      match.matching.secondaryRole ||
+      roleHint ||
+      "Analyst";
+    nextRoleAssignments[match.user.id] = assignedRole;
+
+    const roleIndex = availableRoles.indexOf(assignedRole);
+    if (roleIndex >= 0) {
+      availableRoles.splice(roleIndex, 1);
+    }
+  }
+
+  return {
+    candidateIds: selectedIds,
+    roleAssignments: nextRoleAssignments,
+  };
+}
+
 export function buildTeamArtifacts(
   project: ProjectRecord,
   mode: "ai" | "queue",
   memberIds: string[],
   roleAssignments: Record<string, ProjectRole>,
   compatibilitySummary: string[],
+  createdFrom: TeamCreatedFrom = mode === "queue" ? "QUEUE_MATCH" : "AI_MATCH",
 ): {
   team: TeamRecord;
-  chatBucket: { teamId: string; messages: [] };
+  chatBucket: { teamId: string; messages: ChatMessage[] };
   taskBucket: { teamId: string; tasks: { id: string; title: string; status: "todo" | "done" }[] };
 } {
   const teamId = createId("team");
@@ -375,19 +592,31 @@ export function buildTeamArtifacts(
       memberIds,
       roles: roleAssignments,
       createdByMode: mode,
+      createdFrom,
       status: "active",
       compatibilitySummary,
+      meetingOptions: [],
+      maxSize: project.teamSize,
+      isOverflowTeam: false,
       createdAt,
     },
     chatBucket: {
       teamId,
-      messages: [],
+      messages: [
+        {
+          id: createId("message"),
+          teamId,
+          userId: "system",
+          content: "Team created. Introduce yourselves.",
+          createdAt,
+        },
+      ],
     },
     taskBucket: {
       teamId,
       tasks: [
         { id: createId("task"), title: "Confirm role ownership and deliverables", status: "todo" },
-        { id: createId("task"), title: "Pick a kickoff meeting time", status: "todo" },
+        { id: createId("task"), title: "Vote on a kickoff meeting time", status: "todo" },
         { id: createId("task"), title: "Draft milestone one outline", status: "todo" },
       ],
     },
@@ -457,5 +686,11 @@ export function resolveCurrentTeam(
 export function canUserMatch(state: AppState, userId: string, projectId: string): boolean {
   const membership = getActiveMembership(state.memberships, userId, projectId);
   const user = state.users.find((item) => item.id === userId);
-  return Boolean(membership && !membership.teamId && !user?.flags.matchingRestricted);
+  return Boolean(
+    membership &&
+      membership.matchingStatus !== "confirmed" &&
+      !membership.confirmedTeamId &&
+      !membership.teamId &&
+      !user?.flags.matchingRestricted,
+  );
 }

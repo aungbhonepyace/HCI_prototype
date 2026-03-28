@@ -7,6 +7,7 @@ const STUDENT_SIDEBAR_LINKS = [
   { to: "/student/dashboard", label: "Dashboard" },
   { to: "/student/join", label: "Join" },
   { to: "/student/match", label: "Match" },
+  { to: "/student/proposals", label: "Proposals" },
   { to: "/student/team", label: "Team" },
   { to: "/student/notifications", label: "Notifications" },
   { to: "/student/profile", label: "Profile" },
@@ -82,27 +83,29 @@ function ShellFrame({
                 <NavItem key={item.to} to={item.to} label={item.label} />
               ))}
             </nav>
-            <div className="mt-auto rounded-[24px] border border-ink/10 bg-ink p-5 text-white">
-              <p className="subtle-label text-white/50">Unread</p>
-              <p className="mt-3 text-3xl font-semibold">
-                {
-                  state.notifications.filter(
-                    (notification) => notification.userId === currentUser?.id && !notification.read,
-                  ).length
-                }
-              </p>
-              <p className="mt-2 text-sm text-white/75">
-                Keep an eye on updates, report actions, and team activity.
-              </p>
-              <Link
-                to={currentUser?.role === "admin" ? "/admin/notifications" : "/student/notifications"}
-                className="btn-secondary mt-5 w-full bg-white text-ink"
-              >
-                Open notifications
-              </Link>
-              <button className="btn-secondary mt-3 w-full bg-white text-ink" onClick={() => logout()}>
-                Logout
-              </button>
+            <div className="mt-auto pt-6">
+              <div className="rounded-[24px] border border-ink/10 bg-ink p-5 text-white">
+                <p className="subtle-label text-white/50">Unread</p>
+                <p className="mt-3 text-3xl font-semibold">
+                  {
+                    state.notifications.filter(
+                      (notification) => notification.userId === currentUser?.id && !notification.read,
+                    ).length
+                  }
+                </p>
+                <p className="mt-2 text-sm text-white/75">
+                  Keep an eye on updates, report actions, and team activity.
+                </p>
+                <Link
+                  to={currentUser?.role === "admin" ? "/admin/notifications" : "/student/notifications"}
+                  className="btn-secondary mt-5 w-full bg-white text-ink"
+                >
+                  Open notifications
+                </Link>
+                <button className="btn-secondary mt-3 w-full bg-white text-ink" onClick={() => logout()}>
+                  Logout
+                </button>
+              </div>
             </div>
           </div>
         </aside>

@@ -131,7 +131,7 @@ window.gfDebug.resetDemoData()
 
 ## What’s included
 
-- Public landing and mock email verification login
+- Public login entry and mock email verification login
 - Student dashboard, join, profile, match picker, AI chat flow, AI team proposals, queue flow, team workspace, notifications, and report form
 - Admin dashboard, classes, project setup with join codes, overflow policy controls, report moderation console, and student roster
 - Transparent profiles with verified badges
@@ -159,7 +159,7 @@ The app seeds demo data on first load and writes each collection to a dedicated 
 - `gf_overflow_state`: per-project overflow slots, placed overflow members, forced placements, and deadline finalization
 - `gf_memberships`: user to class/project membership, matching state, and confirmed team assignment
 - `gf_ai_sessions`: AI questionnaire answers, last result, rematch history
-- `gf_queue_sessions`: role queue choices, constraints, ETA, queue state, requeue count
+- `gf_queue_sessions`: role queue choices, constraints, elapsed queue time, queue state, requeue count
 - `gf_team_proposals`: AI proposal records, member statuses, locked accepted members, and refill state
 - `gf_teams`: confirmed team rosters, roles, creation mode/source, meeting vote options, and overflow metadata
 - `gf_team_chat`: team chat buckets
@@ -185,7 +185,7 @@ AI Chat Matcher:
 Lucky Draw Role Queue:
 
 - Saves primary role, optional secondary role, and constraints
-- Simulates queue wait time with a local ETA countdown
+- Simulates queue wait time with a local elapsed timer that stops when a match is found
 - Builds a deterministic roster weighted by requested role coverage and constraint fit
 - Re-queue increments the session and produces a different draw
 - After a queue team confirms, the same overflow engine can attach a volunteer as the extra member when overflow is allowed

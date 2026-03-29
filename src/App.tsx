@@ -10,7 +10,7 @@ import {
   AdminReportsPage,
   AdminStudentsPage,
 } from "@/pages/admin/pages";
-import { LandingPage, LoginPage } from "@/pages/public";
+import { LoginPage } from "@/pages/public";
 import {
   AIChatPage,
   AIResultPage,
@@ -36,13 +36,10 @@ function NotFoundPage() {
         <p className="subtle-label">404</p>
         <h1 className="mt-3 font-heading text-4xl font-semibold text-ink">Route not found</h1>
         <p className="mt-3 text-sm text-ink/65">
-          Jump back to the landing page or log in to continue with the prototype.
+          Jump back to the login page to continue with the prototype.
         </p>
         <div className="mt-6 flex justify-center gap-3">
-          <Link to="/" className="btn-secondary">
-            Landing
-          </Link>
-          <Link to="/login" className="btn-primary">
+          <Link to="/" className="btn-primary">
             Login
           </Link>
         </div>
@@ -56,7 +53,7 @@ export function App() {
     <AppProvider>
       <Routes>
         <Route element={<AuthRedirect />}>
-          <Route path="/" element={<LandingPage />} />
+          <Route path="/" element={<LoginPage />} />
           <Route path="/login" element={<LoginPage />} />
         </Route>
 

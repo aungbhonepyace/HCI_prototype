@@ -154,6 +154,12 @@ function formatMeetingOption(value: string) {
   }).format(new Date(value));
 }
 
+function formatElapsedTimer(seconds: number) {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`;
+}
+
 function formatExpiresIn(expiresAt: string, now: number) {
   const diff = Math.max(0, new Date(expiresAt).getTime() - now);
   const minutes = Math.floor(diff / 60000);
@@ -260,7 +266,6 @@ function ProjectScopePicker({
                 </div>
                 <div className="flex flex-wrap gap-2 md:justify-end">
                   <Badge tone={team ? "success" : "soft"}>{team ? "Team active" : "No team yet"}</Badge>
-                  <Badge tone="soft">{project.joinCode}</Badge>
                 </div>
               </div>
               <p className="mt-4 text-sm text-ink/65">{project.description}</p>
@@ -432,7 +437,6 @@ export function StudentDashboardPage() {
               <Link to="/student/join" className="btn-primary">
                 Enter join code
               </Link>
-              {state.projects[0] ? <Badge tone="soft">{state.projects[0].joinCode}</Badge> : null}
             </div>
           }
         />
@@ -453,9 +457,9 @@ export function StudentDashboardPage() {
             <p className="mt-3 max-w-2xl text-sm text-ink/65">{currentProject.description}</p>
             <div className="mt-6 grid gap-4 md:grid-cols-2">
               <div className="panel-muted p-5">
-                <p className="subtle-label">Join code</p>
-                <p className="mt-3 text-2xl font-semibold text-ink">{currentProject.joinCode}</p>
-                <p className="mt-2 text-sm text-ink/55">Share this only with classmates in the same project.</p>
+                <p className="subtle-label">Formation deadline</p>
+                <p className="mt-3 text-2xl font-semibold text-ink">{formatDeadline(currentProject.deadline)}</p>
+                <p className="mt-2 text-sm text-ink/55">Your instructor or TA manages project access and join codes.</p>
               </div>
               <div className="panel-muted p-5">
                 <p className="subtle-label">Team target</p>
@@ -554,10 +558,7 @@ export function StudentJoinPage() {
               <p className="subtle-label">Seeded demo project</p>
               <h2 className="mt-3 font-heading text-2xl font-semibold text-ink">{project.name}</h2>
               <p className="mt-3 text-sm text-ink/65">{project.description}</p>
-              <div className="mt-5 flex flex-wrap items-center gap-3">
-                <Badge tone="soft">{project.joinCode}</Badge>
-                <span className="text-xs text-ink/45">Deadline {formatDeadline(project.deadline)}</span>
-              </div>
+              <p className="mt-5 text-xs text-ink/45">Deadline {formatDeadline(project.deadline)}</p>
             </article>
           ))}
         </section>
@@ -952,7 +953,7 @@ export function MatchModePickerPage() {
           <Badge tone="soft">Lucky Draw role queue</Badge>
           <h2 className="mt-4 font-heading text-3xl font-semibold text-ink">Role queue</h2>
           <p className="mt-3 text-sm text-ink/65">
-            Pick your primary role, add optional backup coverage, then join a queue with compatibility constraints and a fake live ETA.
+            Pick your primary role, add optional backup coverage, then join a queue with compatibility constraints and a live elapsed timer.
           </p>
           <ul className="mt-6 space-y-3 text-sm text-ink/65">
             <li>Role cards with primary and secondary selection</li>
@@ -1857,9 +1858,13 @@ export function QueueStatusPage() {
 
   const isInactive = Boolean(queue && !queue.inQueue && !queue.lastMatch);
   const queueStart = queue?.startedAt ? new Date(queue.startedAt).getTime() : now;
-  const queueEnd = queueStart + (queue?.etaSeconds || 45) * 1000;
   const elapsedSeconds = queue?.startedAt ? Math.max(0, Math.floor((now - queueStart) / 1000)) : 0;
-  const remaining = isInactive ? queue?.etaSeconds || 45 : Math.max(0, Math.ceil((queueEnd - now) / 1000));
+  const displaySeconds = queue?.lastMatch ? queue.etaSeconds || 0 : isInactive ? 0 : elapsedSeconds;
+  const shouldResolveByTimeout = Boolean(
+    queue?.inQueue &&
+      !queue.lastMatch &&
+      elapsedSeconds >= 45,
+  );
   const shouldResolveEarly = Boolean(
     currentProject &&
       currentUser &&
@@ -1880,11 +1885,11 @@ export function QueueStatusPage() {
   );
 
   useEffect(() => {
-    if (!queue || !queue.inQueue || queue.lastMatch || (remaining > 0 && !shouldResolveEarly)) {
+    if (!queue || !queue.inQueue || queue.lastMatch || (!shouldResolveByTimeout && !shouldResolveEarly)) {
       return;
     }
     resolveQueueMatch();
-  }, [queue, remaining, resolveQueueMatch, shouldResolveEarly]);
+  }, [queue, resolveQueueMatch, shouldResolveByTimeout, shouldResolveEarly]);
 
   if (!currentProject || !queue) {
     return (
@@ -1905,11 +1910,19 @@ export function QueueStatusPage() {
     <div className="space-y-4 md:space-y-6">
       <PageIntro
         eyebrow="Queue status"
-        title={isInactive ? "You are currently out of the queue." : "Your role queue is active."}
+        title={
+          queue.lastMatch
+            ? "A queue match is ready."
+            : isInactive
+              ? "You are currently out of the queue."
+              : "Your role queue is active."
+        }
         description={
-          isInactive
-            ? "Leaving the queue now fully removes this session from active matching. Rejoin only when you want to start the timer again."
-            : "This screen simulates live queueing with an ETA, health counts, and the ability to tweak your role setup or leave the queue."
+          queue.lastMatch
+            ? "The queue timer stops as soon as a roster is found. Review the match or re-queue to start the timer from zero again."
+            : isInactive
+              ? "Leaving the queue now fully removes this session from active matching. Rejoin only when you want to start the timer again."
+              : "This screen simulates live queueing with an elapsed timer, health counts, and the ability to tweak your role setup or leave the queue."
         }
       />
 
@@ -1927,12 +1940,14 @@ export function QueueStatusPage() {
             {queue.lastMatch ? "Match ready" : isInactive ? "Queue inactive" : "Finding roster"}
           </Badge>
           <p className="mt-4 font-heading text-5xl font-semibold text-ink">
-            {isInactive ? "Paused" : `${remaining}s`}
+            {isInactive ? "Paused" : formatElapsedTimer(displaySeconds)}
           </p>
           <p className="mt-3 text-sm text-ink/65">
-            {isInactive
-              ? `You left the queue. Primary role: ${queue.primaryRole}`
-              : `ETA based on your role and constraints. Primary role: ${queue.primaryRole}`}
+            {queue.lastMatch
+              ? `Match found after ${formatElapsedTimer(displaySeconds)}. Primary role: ${queue.primaryRole}`
+              : isInactive
+                ? `You left the queue. Primary role: ${queue.primaryRole}`
+                : `Elapsed queue time. Primary role: ${queue.primaryRole}`}
             {queue.secondaryRole ? ` • Secondary role: ${queue.secondaryRole}` : ""}
           </p>
           <div className="mt-6 flex flex-wrap gap-3">
@@ -2011,7 +2026,7 @@ export function QueueMatchPage() {
     return (
       <EmptyState
         title="No queue match ready"
-        body="Wait for the queue ETA to finish or go back and complete your role and constraint setup."
+        body="Wait for the queue timer to find a match or go back and complete your role and constraint setup."
         action={<Link to="/student/match/queue/status" className="btn-primary">Check queue status</Link>}
       />
     );

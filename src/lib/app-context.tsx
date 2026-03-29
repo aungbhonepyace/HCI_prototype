@@ -267,7 +267,7 @@ function getOrCreateQueueSession(state: AppState, userId: string, projectId: str
       id: createId("queue"),
       userId,
       projectId,
-      etaSeconds: 45,
+      etaSeconds: 0,
       inQueue: false,
       requeueCount: 0,
       updatedAt: new Date().toISOString(),
@@ -1704,6 +1704,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           return { ok: false, message: "No eligible queue roster is available for this project." };
         }
 
+        const elapsedSeconds = queue.startedAt
+          ? Math.max(0, Math.floor((Date.now() - new Date(queue.startedAt).getTime()) / 1000))
+          : queue.etaSeconds || 0;
+
         commit((previous) => ({
           ...previous,
           queueSessions: previous.queueSessions.some((item) => item.id === queue.id)
@@ -1711,6 +1715,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 item.id === queue.id
                   ? {
                       ...item,
+                      etaSeconds: elapsedSeconds,
                       lastMatch: result,
                       inQueue: false,
                       startedAt: undefined,
@@ -1721,6 +1726,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             : [
                 {
                   ...queue,
+                  etaSeconds: elapsedSeconds,
                   lastMatch: result,
                   inQueue: false,
                   startedAt: undefined,
@@ -3011,7 +3017,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const existing = getOrCreateQueueSession(previous, currentUser.id, currentProject.id);
         const session = {
           ...existing,
-          etaSeconds: 45,
+          etaSeconds: 0,
           inQueue: true,
           startedAt: new Date().toISOString(),
           lastMatch: undefined,
@@ -3039,7 +3045,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 ...session,
                 inQueue: false,
                 lastMatch: undefined,
-                etaSeconds: 45,
+                etaSeconds: 0,
                 startedAt: undefined,
                 updatedAt: new Date().toISOString(),
               }
@@ -3070,14 +3076,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return undefined;
       }
 
+      const elapsedSeconds = session.startedAt
+        ? Math.max(0, Math.floor((Date.now() - new Date(session.startedAt).getTime()) / 1000))
+        : session.etaSeconds || 0;
+
       commit((previous) => ({
         ...previous,
         queueSessions: previous.queueSessions.map((item) =>
           item.id === session.id
             ? {
                 ...item,
+                etaSeconds: elapsedSeconds,
                 lastMatch: result,
                 inQueue: false,
+                startedAt: undefined,
                 updatedAt: new Date().toISOString(),
               }
             : item,
@@ -3099,7 +3111,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 ...session,
                 requeueCount: session.requeueCount + 1,
                 lastMatch: undefined,
-                etaSeconds: 45,
+                etaSeconds: 0,
                 inQueue: true,
                 startedAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString(),

@@ -1,94 +1,8 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { useApp } from "@/lib/app-context";
-import { Badge, LogoMark, PageIntro, StatCard } from "@/components/ui";
+import { LogoMark, StatCard } from "@/components/ui";
 import { cn } from "@/lib/utils";
-
-export function LandingPage() {
-  return (
-    <div className="min-h-screen bg-mesh px-4 py-6 md:px-6 lg:px-8">
-      <div className="mx-auto max-w-7xl">
-        <header className="panel flex items-center justify-between px-5 py-4 md:px-6">
-          <LogoMark />
-          <div className="flex items-center gap-3">
-            <Link to="/login" className="btn-primary">
-              Open prototype
-            </Link>
-          </div>
-        </header>
-
-        <section className="grid gap-6 pt-6 lg:grid-cols-[1.2fr,0.8fr]">
-          <PageIntro
-            eyebrow="University Team Formation"
-            title="Build transparent project teams with guided matching and moderated collaboration."
-            description="GroupFinder helps students form project teams through a scripted AI chat matcher or a role-based lucky draw queue, while instructors keep classes, join codes, and reports in one place."
-            actions={
-              <>
-                <Link to="/login" className="btn-primary">
-                  Verify email
-                </Link>
-                <a href="#features" className="btn-secondary">
-                  Explore features
-                </a>
-              </>
-            }
-          />
-
-          <div className="panel grid gap-4 p-6 md:grid-cols-2 lg:grid-cols-1">
-            <div className="rounded-[28px] bg-ink p-6 text-white">
-              <p className="subtle-label text-white/50">Two match modes</p>
-              <h2 className="mt-3 font-heading text-3xl font-semibold">
-                AI chat or Lucky Draw
-              </h2>
-              <p className="mt-3 text-sm text-white/75">
-                Students answer structured prompts, review transparent rosters, then accept or rematch.
-              </p>
-            </div>
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-2">
-              <StatCard label="Student views" value="11" detail="All core routes included" />
-              <StatCard label="Persistence" value="localStorage" detail="Refresh-safe demo state" />
-              <StatCard label="Moderation" value="Reports" detail="Audit log with admin actions" />
-              <StatCard label="Layouts" value="3" detail="Mobile, tablet, desktop optimized" />
-            </div>
-          </div>
-        </section>
-
-        <section
-          id="features"
-          className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4"
-        >
-          {[
-            {
-              title: "Guided AI chat matcher",
-              body: "Finite-state Q&A collects role, skills, availability, goal level, and working style before producing a deterministic match with rationale.",
-            },
-            {
-              title: "Lucky draw role queue",
-              body: "Students choose a primary role, optional secondary role, and constraints, then join a queue with ETA, health indicators, and re-queue controls.",
-            },
-            {
-              title: "Team workspace",
-              body: "Accepted teams get a shared roster, local chat, editable to-do lists, meeting voting, and in-context reporting controls.",
-            },
-            {
-              title: "Instructor oversight",
-              body: "Admins create classes and projects, generate join codes, monitor rosters, and action reports with warnings, mutes, matching restrictions, or removals.",
-            },
-          ].map((item, index) => (
-            <article
-              key={item.title}
-              className={cn("panel p-6", index % 2 === 0 ? "animate-float-in" : "")}
-            >
-              <Badge tone="soft">{`0${index + 1}`}</Badge>
-              <h3 className="mt-4 font-heading text-2xl font-semibold text-ink">{item.title}</h3>
-              <p className="mt-3 text-sm text-ink/65">{item.body}</p>
-            </article>
-          ))}
-        </section>
-      </div>
-    </div>
-  );
-}
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -103,22 +17,13 @@ export function LoginPage() {
   return (
     <div className="min-h-screen bg-mesh px-4 py-6 md:px-6 lg:px-8">
       <div className="mx-auto flex max-w-6xl flex-col gap-6">
-        <header className="panel flex items-center justify-between px-5 py-4 md:px-6">
+        <header className="panel px-5 py-4 md:px-6">
           <LogoMark />
-          <Link to="/" className="btn-secondary">
-            Back to landing
-          </Link>
         </header>
 
         <div className="grid gap-6 lg:grid-cols-[0.9fr,1.1fr]">
           <div className="panel p-6 md:p-8">
-            <p className="subtle-label">Mock verification</p>
-            <h1 className="mt-3 font-heading text-4xl font-semibold text-ink">
-              Sign in with email, password, and role
-            </h1>
-            <p className="mt-3 max-w-md text-sm text-ink/65">
-              Existing accounts require the correct password. New emails create a verified demo account instantly when the password meets the minimum policy.
-            </p>
+            <h1 className="font-heading text-4xl font-semibold text-ink">Sign in</h1>
 
             <div className="mt-8 space-y-6">
               <div className="grid gap-3 sm:grid-cols-2">
